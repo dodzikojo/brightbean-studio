@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -312,10 +313,15 @@ class TestSdkTransport:
         names = {tool["name"] for tool in listed.json()["result"]["tools"]}
         assert "list_accounts" in names
         assert all(tool["inputSchema"]["type"] == "object" for tool in listed.json()["result"]["tools"])
+        assert all(tool["outputSchema"]["type"] == "object" for tool in listed.json()["result"]["tools"])
+        list_accounts = next(tool for tool in listed.json()["result"]["tools"] if tool["name"] == "list_accounts")
+        assert list_accounts["annotations"]["readOnlyHint"] is True
 
         assert called.status_code == 200, called.text
         result = called.json()["result"]
         payload = json.loads(result["content"][0]["text"])
+        assert result["structuredContent"] == payload
+        assert result["isError"] is False
         assert {account["id"] for account in payload["accounts"]} == {str(social_account.id)}
         assert enforce_rate_limits.call_count == 2
         assert all(call.kwargs == {"is_write": True} for call in enforce_rate_limits.call_args_list)
@@ -324,6 +330,27 @@ class TestSdkTransport:
             action="mcp.tools/call:list_accounts",
             status_code=200,
         ).exists()
+
+    def test_official_sdk_accepts_typed_error_against_advertised_output_schema(self, issued_key):
+        from apps.mcp.registry import get_tool
+
+        enabled_tool = get_tool("list_accounts")
+        assert enabled_tool is not None
+        disabled_tool = replace(enabled_tool, enabled=False)
+        with (
+            patch("apps.mcp.server.get_tool", return_value=disabled_tool),
+            _test_client(_sdk_app(), base_url="https://testserver") as client,
+        ):
+            response = client.post(
+                MCP_PATH,
+                headers=_auth_headers(issued_key.plaintext_token),
+                json=_rpc("tools/call", {"name": "list_accounts", "arguments": {}}),
+            )
+
+        assert response.status_code == 200, response.text
+        result = response.json()["result"]
+        assert result["isError"] is True
+        assert result["structuredContent"]["error"]["code"] == "tool_disabled"
 
     def test_real_rate_limit_returns_structured_http_429_once(self, issued_key):
         from apps.api_keys.models import ApiKeyAuditLog

@@ -26,8 +26,9 @@ from starlette.responses import Response
 from apps.api.auth import McpAuth
 from apps.api.limits import enforce_http_rate_limits
 from apps.api.middleware import log_audit_entry
+from apps.mcp.errors import DomainError, domain_error_result, tool_disabled_error
 from apps.mcp.protocol import INVALID_PARAMS, SERVER_NAME, SERVER_VERSION, JsonRpcError
-from apps.mcp.tools import all_tools, get_tool
+from apps.mcp.registry import all_tools, get_tool
 from apps.mcp.transport import _status_for_response, _ToolValidationError, _validate_tool_arguments
 
 MAX_REQUEST_BODY_SIZE = 4 * 1024 * 1024
@@ -264,11 +265,20 @@ def _authenticated_context(ctx: ServerRequestContext) -> BrightBeanAccessToken:
 
 
 def _list_tools_sync(access_token: BrightBeanAccessToken) -> list[types.Tool]:
+    del access_token
     return [
         types.Tool(
             name=tool.name,
             description=tool.description,
             input_schema=tool.input_schema,
+            output_schema=tool.output_schema,
+            annotations=types.ToolAnnotations(
+                title=tool.annotations.title,
+                read_only_hint=tool.annotations.read_only,
+                destructive_hint=tool.annotations.destructive,
+                idempotent_hint=tool.annotations.idempotent,
+                open_world_hint=tool.annotations.open_world,
+            ),
         )
         for tool in all_tools()
     ]
@@ -276,9 +286,11 @@ def _list_tools_sync(access_token: BrightBeanAccessToken) -> list[types.Tool]:
 
 def _call_tool_sync(access_token: BrightBeanAccessToken, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     request = access_token.django_request
-    tool = get_tool(name)
+    tool = get_tool(name, include_disabled=True)
     if tool is None:
         raise MCPError(code=INVALID_PARAMS, message=f"tools/call: unknown tool '{name}'")
+    if not tool.enabled:
+        return domain_error_result(tool_disabled_error(name))
 
     try:
         _validate_tool_arguments(tool.input_schema, arguments)
@@ -295,6 +307,8 @@ def _call_tool_sync(access_token: BrightBeanAccessToken, name: str, arguments: d
         raise MCPError(code=INVALID_PARAMS, message=f"tools/call '{name}': {exc}") from exc
     except JsonRpcError as exc:
         raise MCPError(code=exc.code, message=exc.message, data=exc.data) from exc
+    except DomainError as exc:
+        return domain_error_result(exc)
     return result
 
 
@@ -315,13 +329,23 @@ async def _call_tool(
     access_token = _authenticated_context(ctx)
     arguments = params.arguments or {}
     result = await sync_to_async(_call_tool_sync, thread_sensitive=True)(access_token, params.name, arguments)
-    content: list[types.ContentBlock] = [
-        types.TextContent(type="text", text=str(block.get("text", "")))
-        for block in result.get("content", [])
-        if block.get("type") == "text"
-    ]
+    content: list[types.ContentBlock] = []
+    for block in result.get("content", []):
+        if block.get("type") == "text":
+            content.append(types.TextContent(type="text", text=str(block.get("text", ""))))
+        elif block.get("type") == "resource_link":
+            content.append(
+                types.ResourceLink(
+                    type="resource_link",
+                    uri=str(block.get("uri", "")),
+                    name=str(block.get("name", "Resource")),
+                    description=block.get("description"),
+                    mime_type=block.get("mimeType"),
+                )
+            )
     return types.CallToolResult(
         content=content,
+        structured_content=result.get("structuredContent"),
         is_error=bool(result.get("isError", False)),
     )
 

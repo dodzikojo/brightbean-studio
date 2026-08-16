@@ -14,7 +14,6 @@ type, and agents can always ``JSON.parse`` it.
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -24,11 +23,11 @@ from ninja.errors import HttpError
 
 from apps.analytics.api_builders import build_account_analytics, build_post_analytics
 from apps.api.limits import check_platform_quota
-from apps.api.pagination import decode_offset_cursor, encode_offset_cursor
 from apps.api.schemas import PostResponse
 from apps.composer.models import PlatformPost, Post
 from apps.composer.services import create_post, transition_platform_post
 from apps.mcp.protocol import INVALID_PARAMS, JsonRpcError
+from apps.mcp.results import decode_page_cursor, encode_page_cursor, success_result
 from apps.mcp.tools import Tool, register_tool
 from apps.social_accounts.models import SocialAccount
 
@@ -44,10 +43,7 @@ def _wrap_text(payload: Any) -> dict:
     ``json`` content type isn't universally supported yet. Agents can
     always ``JSON.parse`` the returned text.
     """
-    return {
-        "content": [{"type": "text", "text": json.dumps(payload, default=str)}],
-        "isError": False,
-    }
+    return success_result(payload)
 
 
 def _require_perm(context: dict[str, Any], permission_key: str) -> None:
@@ -442,7 +438,7 @@ def _list_posts(args: dict, context: dict[str, Any]) -> dict:
         raise JsonRpcError(INVALID_PARAMS, f"limit must be between 1 and {_MCP_POST_LIMIT_MAX}")
 
     try:
-        offset = decode_offset_cursor(args.get("cursor"))
+        offset = decode_page_cursor(args.get("cursor"))
     except ValueError as exc:
         raise JsonRpcError(INVALID_PARAMS, "cursor is not a valid pagination cursor") from exc
 
@@ -462,7 +458,7 @@ def _list_posts(args: dict, context: dict[str, Any]) -> dict:
         {
             "posts": [_serialize_post(post, context) for post in rows],
             "limit": limit,
-            "next_cursor": encode_offset_cursor(offset + limit) if has_more else None,
+            "next_cursor": encode_page_cursor(offset + limit) if has_more else None,
         }
     )
 

@@ -373,8 +373,8 @@ class TestMcpBatchRateLimit:
             calls["n"] += 1
 
         monkeypatch.setattr(_limits, "enforce_http_rate_limits", _counting)
-        # Also monkeypatch the symbol the transport module already imported.
-        import apps.mcp.transport as _t
+        # Also monkeypatch the symbol the isolated legacy transport imported.
+        import apps.mcp.legacy as _t
 
         monkeypatch.setattr(_t, "enforce_http_rate_limits", _counting)
 
@@ -399,7 +399,7 @@ class TestMcpBatchRateLimit:
             calls["n"] += 1
 
         monkeypatch.setattr(_limits, "enforce_http_rate_limits", _counting)
-        import apps.mcp.transport as _t
+        import apps.mcp.legacy as _t
 
         monkeypatch.setattr(_t, "enforce_http_rate_limits", _counting)
 
