@@ -202,86 +202,15 @@ def _client_ip(request: HttpRequest) -> str | None:
 # expose an ApiKey-shaped shim — the MCP handlers, throttle, and audit log all
 # read an ``ApiKey``-like object off the request and run unchanged.
 
-_MCP_OAUTH_SCOPE = "mcp"
 
-
-class _AllWorkspaceAccounts:
-    """Duck-types ``ApiKey.social_accounts`` for an OAuth caller.
-
-    A scoped API key carries an explicit account allowlist; an OAuth caller
-    acts as *themselves*, so their effective allowlist is every connected
-    account in the workspace they're operating in. Only ``.all()`` is consumed
-    by the MCP handlers (apps/mcp/handlers.py), so that's all we implement.
-    """
-
-    def __init__(self, workspace_id: Any) -> None:
-        self._workspace_id = workspace_id
-
-    def all(self):  # noqa: A003 — mirrors the Django manager method name.
-        from apps.social_accounts.models import SocialAccount
-
-        return SocialAccount.objects.for_workspace(self._workspace_id)
-
-
-class OAuthMcpActor:
-    """ApiKey-shaped stand-in for an OAuth-authenticated MCP caller.
-
-    Exposes exactly the ``ApiKey`` attributes the MCP path touches — the
-    handlers' ``workspace`` / ``social_accounts`` / ``issued_by``, the
-    throttle's ``id`` / ``workspace_id`` / ``rate_override_*``, and the audit
-    log's ``is_oauth`` discriminator — without creating a DB row. The caller's
-    permissions are carried via the ``VirtualMembership`` attached separately
-    to the request, so no key-style permission intersection applies here.
-    """
-
-    is_oauth = True
-    # No per-key rate overrides — OAuth callers use the default tiers.
-    rate_override_writes = None
-    rate_override_reads = None
-
-    def __init__(self, *, user: Any, membership: Any) -> None:
-        self.issued_by = user
-        self.issued_by_id = user.id
-        self.workspace = membership.workspace
-        self.workspace_id = membership.workspace_id
-        # Namespaced id so the per-actor rate-limit cache key
-        # (``apikey:<id>:w``) can't collide with a real ApiKey UUID.
-        self.id = f"oauth:{user.id}"
-        self.social_accounts = _AllWorkspaceAccounts(membership.workspace_id)
-        # Read by ``McpAuth`` to build the request's ``VirtualMembership`` — the
-        # single source of truth for this caller's permissions.
-        self.effective_permissions = membership.effective_permissions
-
-
-def _resolve_active_membership(user: Any):
-    """Pick the workspace an OAuth caller operates in.
-
-    Mirrors the dashboard's "current workspace" notion (see
-    ``apps.members.middleware.RBACMiddleware``): the user's
-    ``last_workspace_id`` when they still have a non-archived membership
-    there, else their earliest-joined non-archived membership. Returns None
-    when the user has no usable workspace — the caller refuses the auth.
-    """
-    from apps.members.models import WorkspaceMembership
-
-    base = WorkspaceMembership.objects.select_related("workspace", "custom_role").filter(
-        user=user, workspace__is_archived=False
-    )
-    if getattr(user, "last_workspace_id", None):
-        current = base.filter(workspace_id=user.last_workspace_id).first()
-        if current is not None:
-            return current
-    return base.order_by("added_at").first()
-
-
-def _resolve_oauth_actor(token: str) -> OAuthMcpActor | None:
+def _resolve_oauth_actor(token: str):
     """Resolve a non-bb_studio_ bearer as a django-oauth-toolkit access token.
 
     Looks the token up by its indexed ``token_checksum`` (the path DOT's own
     bearer validation uses; a plain ``token=`` filter scans an unindexed
     column and degrades as tokens accumulate). Returns None for any missing /
-    invalid / expired / wrong-scope token, or when the user has no usable
-    workspace.
+    invalid, expired, or wrong-scope token. Workspace routing is deliberately
+    deferred until a scoped operation is invoked.
 
     Each rejection is logged with its specific reason (never the token value)
     so an opaque 401 from an MCP client is diagnosable from the server logs.
@@ -290,7 +219,7 @@ def _resolve_oauth_actor(token: str) -> OAuthMcpActor | None:
 
     access_token_model = get_access_token_model()
     token_checksum = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    tok = access_token_model.objects.select_related("user").filter(token_checksum=token_checksum).first()
+    tok = access_token_model.objects.select_related("user", "application").filter(token_checksum=token_checksum).first()
     if tok is None:
         # INFO (not WARNING): an unknown bearer is the expected probe path,
         # bounded by the IP throttle; logging it louder invites flooding.
@@ -300,31 +229,34 @@ def _resolve_oauth_actor(token: str) -> OAuthMcpActor | None:
         # WARNING: a token row with no user is a data anomaly, not normal traffic.
         LOG.warning("Bearer auth rejected: OAuth access token %s is not bound to a user.", tok.pk)
         return None
+    if not tok.user.is_active:
+        LOG.info("Bearer auth rejected: OAuth access token user %s is inactive.", tok.user_id)
+        return None
     # is_valid([scope]) == (not is_expired()) and allow_scopes([scope]); split so the
     # log names whether expiry or scope was the cause.
     if tok.is_expired():
         # INFO: token expiry is a normal, recurring condition (clients refresh hourly).
         LOG.info("Bearer auth rejected: OAuth access token for user %s has expired.", tok.user_id)
         return None
-    if not tok.allow_scopes([_MCP_OAUTH_SCOPE]):
+    from apps.oauth_server.scopes import has_mcp_scope, normalize_scopes
+    from apps.oauth_server.services import verify_access_binding
+
+    granted_scopes = normalize_scopes(tok.scope or "")
+    if not has_mcp_scope(granted_scopes):
         # INFO: a wrong-scope token is a client-side issue, not a server alarm.
         LOG.info(
             "Bearer auth rejected: OAuth token for user %s is missing the %r scope (granted: %r).",
             tok.user_id,
-            _MCP_OAUTH_SCOPE,
+            "an MCP capability",
             tok.scope,
         )
         return None
-    membership = _resolve_active_membership(tok.user)
-    if membership is None:
-        # WARNING: a valid, scoped, unexpired token whose user maps to no
-        # workspace is the genuinely anomalous case operators want to see.
-        LOG.warning(
-            "Bearer auth rejected: user %s has a valid OAuth token but no active (non-archived) workspace membership.",
-            tok.user_id,
-        )
+    if verify_access_binding(token, tok) is None:
+        LOG.info("Bearer auth rejected: OAuth token for user %s has no valid MCP resource binding.", tok.user_id)
         return None
-    return OAuthMcpActor(user=tok.user, membership=membership)
+    from apps.mcp.principal import principal_from_oauth_token
+
+    return principal_from_oauth_token(tok)
 
 
 class McpAuth(ApiKeyAuth):
@@ -339,7 +271,15 @@ class McpAuth(ApiKeyAuth):
 
     def authenticate(self, request: HttpRequest, token: str):  # type: ignore[override]
         if token.startswith(TOKEN_PREFIX):
-            return super().authenticate(request, token)
+            api_key = super().authenticate(request, token)
+            if api_key is None:
+                return None
+            from apps.mcp.principal import principal_from_api_key
+
+            principal = principal_from_api_key(api_key)
+            request.mcp_principal = principal  # type: ignore[attr-defined]
+            request.auth = principal  # type: ignore[attr-defined]
+            return principal
 
         # OAuth path — reuse the key path's pre-auth defenses (IP throttle +
         # HTTPS guard) so both credential types share one implementation and
@@ -347,20 +287,14 @@ class McpAuth(ApiKeyAuth):
         if self._pre_auth_reject(request):
             return None
 
-        actor = _resolve_oauth_actor(token)
-        if actor is None:
+        principal = _resolve_oauth_actor(token)
+        if principal is None:
             # _resolve_oauth_actor has already logged the specific reason.
             record_failed_auth(request)
             return None
 
-        request.api_key = actor  # type: ignore[attr-defined]
-        request.workspace = actor.workspace  # type: ignore[attr-defined]
-        request.workspace_membership = VirtualMembership(  # type: ignore[attr-defined]
-            effective_permissions=actor.effective_permissions,
-            workspace=actor.workspace,
-            user=actor.issued_by,
-        )
-        # Lets audit logging / author attribution treat the OAuth user as the
-        # actor, exactly as the key path treats ``api_key.issued_by``.
-        request.user = actor.issued_by  # type: ignore[assignment]
-        return actor
+        request.api_key = principal  # type: ignore[attr-defined]
+        request.mcp_principal = principal  # type: ignore[attr-defined]
+        request.auth = principal  # type: ignore[attr-defined]
+        request.user = principal.user  # type: ignore[assignment]
+        return principal

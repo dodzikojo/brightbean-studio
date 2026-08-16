@@ -660,7 +660,7 @@ All write endpoints accept `idempotency_key` (or `Idempotency-Key` header) for s
 
 ### MCP Tools
 
-The MCP server lives at `POST {APP_URL}/api/v1/mcp` and speaks JSON-RPC 2.0 over Streamable HTTP. It implements the standard `initialize`, `tools/list`, `tools/call`, and `ping` methods. Tools:
+The MCP server lives at `POST {APP_URL}/api/v1/mcp` and speaks JSON-RPC 2.0 over stateless Streamable HTTP. The production web process serves Django and MCP together through ASGI. `MCP_TRANSPORT_BACKEND=legacy|sdk_v2` provides a rollback-safe transport switch, while `MCP_SERVER_ENABLED=false` disables the MCP endpoint without affecting the rest of BrightBean. The SDK transport implements the standard `initialize`, `tools/list`, `tools/call`, and `ping` methods. Tools:
 
 | Tool | Purpose | Permission |
 |---|---|---|

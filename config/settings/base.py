@@ -488,9 +488,21 @@ RATELIMIT_USE_CACHE = "default"
 #     /oauth/authorize/ sends unauthenticated users to log in via allauth).
 MCP_PUBLIC_BASE_URL = env("MCP_PUBLIC_BASE_URL", default=APP_URL).rstrip("/")
 MCP_OAUTH_ISSUER_URL = env("MCP_OAUTH_ISSUER_URL", default=APP_URL).rstrip("/")
+MCP_SERVER_ENABLED = env.bool("MCP_SERVER_ENABLED", default=True)
+MCP_TRANSPORT_BACKEND = env("MCP_TRANSPORT_BACKEND", default="legacy")
+# Optional exact-path alias used during staged SDK rollouts, for example
+# ``/api/v1/mcp-next``. Empty keeps only the canonical endpoint active.
+MCP_STAGING_ALIAS = env("MCP_STAGING_ALIAS", default="").rstrip("/")
 
 OAUTH2_PROVIDER = {
-    "SCOPES": {"mcp": "Call BrightBean Studio MCP tools on your behalf"},
+    "SCOPES": {
+        "mcp.read": "Read authorized BrightBean workspaces and content",
+        "mcp.content": "Create and edit BrightBean content and media",
+        "mcp.publish": "Schedule, approve, and publish BrightBean content",
+        "mcp.inbox.reply": "Send replies from the BrightBean inbox",
+        "mcp.admin": "Manage BrightBean MCP settings and activity",
+        "mcp": "Compatibility access to all MCP capabilities",
+    },
     "DEFAULT_SCOPES": ["mcp"],
     "PKCE_REQUIRED": True,
     # Restrict ``code_challenge_method`` to ``S256``. django-oauth-toolkit
@@ -503,10 +515,14 @@ OAUTH2_PROVIDER = {
     "REFRESH_TOKEN_EXPIRE_SECONDS": 30 * 24 * 60 * 60,
     "AUTHORIZATION_CODE_EXPIRE_SECONDS": 600,
     "ROTATE_REFRESH_TOKEN": True,
-    "REQUEST_APPROVAL_PROMPT": "auto",
+    "REQUEST_APPROVAL_PROMPT": "force",
+    "REFRESH_TOKEN_REUSE_PROTECTION": True,
     # Claude's OAuth callback is always https; reject non-TLS redirect URIs.
     "ALLOWED_REDIRECT_URI_SCHEMES": ["https"],
 }
+# DOT marks its application model as swappable. Declaring the default explicitly
+# lets Django resolve migration dependencies for models that reference OAuth clients.
+OAUTH2_PROVIDER_APPLICATION_MODEL = "oauth2_provider.Application"
 
 
 # ---------------------------------------------------------------------------

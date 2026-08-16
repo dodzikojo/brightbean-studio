@@ -25,6 +25,7 @@ from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET
 from oauth2_provider.models import get_application_model
+from oauth2_provider.views.base import AuthorizationView, TokenView
 
 from .metadata import authorization_server_metadata, protected_resource_metadata
 
@@ -91,7 +92,35 @@ def _is_https_uri(value) -> bool:
     if not isinstance(value, str):
         return False
     parsed = urlparse(value)
-    return parsed.scheme == "https" and bool(parsed.netloc)
+    return (
+        parsed.scheme == "https"
+        and bool(parsed.netloc)
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.fragment
+        and not any(character.isspace() for character in value)
+    )
+
+
+class CanonicalResourceAuthorizationView(AuthorizationView):
+    """Reject authorization unless it targets exactly the MCP resource."""
+
+    def dispatch(self, request, *args, **kwargs):
+        from .resources import canonical_mcp_resource_uri
+
+        values = request.GET.getlist("resource") if request.method == "GET" else request.POST.getlist("resource")
+        if values != [canonical_mcp_resource_uri()]:
+            return _dcr_error("invalid_target", "The canonical MCP resource is required.")
+        return super().dispatch(request, *args, **kwargs)
+
+
+class McpTokenView(TokenView):
+    """Return OAuth token envelopes with their required JSON media type."""
+
+    def authorization_flow_token_response(self, request, *args, **kwargs):
+        response = super().authorization_flow_token_response(request, *args, **kwargs)
+        response["Content-Type"] = "application/json"
+        return response
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -124,6 +153,8 @@ class RegisterView(View):
             return _dcr_error("invalid_redirect_uri", "redirect_uris is required.")
         if len(redirect_uris) > _MAX_REDIRECT_URIS:
             return _dcr_error("invalid_redirect_uri", "Too many redirect_uris.")
+        if len(set(redirect_uris)) != len(redirect_uris):
+            return _dcr_error("invalid_redirect_uri", "redirect_uris must be unique.")
         if not all(_is_https_uri(u) for u in redirect_uris):
             return _dcr_error(
                 "invalid_redirect_uri",

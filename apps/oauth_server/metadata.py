@@ -14,6 +14,9 @@ from __future__ import annotations
 
 from django.conf import settings
 
+from .resources import canonical_mcp_resource_uri
+from .scopes import ADVERTISED_MCP_SCOPES
+
 
 def authorization_server_metadata() -> dict:
     """RFC 8414 authorization-server metadata document."""
@@ -24,7 +27,7 @@ def authorization_server_metadata() -> dict:
         "token_endpoint": f"{issuer}/oauth/token/",
         "registration_endpoint": f"{issuer}/oauth/register",
         "revocation_endpoint": f"{issuer}/oauth/revoke_token/",
-        "scopes_supported": ["mcp"],
+        "scopes_supported": list(ADVERTISED_MCP_SCOPES),
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "token_endpoint_auth_methods_supported": ["none"],
@@ -36,9 +39,10 @@ def authorization_server_metadata() -> dict:
 def protected_resource_metadata() -> dict:
     """RFC 9728 protected-resource metadata for the /api/v1/mcp endpoint."""
     return {
-        "resource": f"{settings.MCP_PUBLIC_BASE_URL}/api/v1/mcp",
+        "resource": canonical_mcp_resource_uri(),
         "authorization_servers": [settings.MCP_OAUTH_ISSUER_URL],
-        "scopes_supported": ["mcp"],
+        "scopes_supported": list(ADVERTISED_MCP_SCOPES),
+        "bearer_methods_supported": ["header"],
         "resource_name": "BrightBean Studio MCP",
         "resource_documentation": f"{settings.MCP_PUBLIC_BASE_URL}/api/v1/docs",
     }

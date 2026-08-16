@@ -400,8 +400,9 @@ class TestMcpAnalyticsPermissionGate:
             content_type="application/json",
         )
         body = mcp.json()
-        assert "error" in body, body
-        assert "permission denied" in body["error"]["message"].lower()
+        error = body["result"]["structuredContent"]["error"]
+        assert error["code"] == "forbidden"
+        assert error["message"] == "This credential cannot use that tool."
 
     def test_post_analytics_tool_requires_view_analytics(self, analytics_client_no_perm, published_ig_post):
         post, _pp = published_ig_post
@@ -416,8 +417,9 @@ class TestMcpAnalyticsPermissionGate:
             content_type="application/json",
         )
         body = mcp.json()
-        assert "error" in body, body
-        assert "permission denied" in body["error"]["message"].lower()
+        error = body["result"]["structuredContent"]["error"]
+        assert error["code"] == "forbidden"
+        assert error["message"] == "This credential cannot use that tool."
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +441,19 @@ class TestProposedPublishAtMcp:
         envelope = resp.json()
         assert "error" not in envelope, envelope
         return json.loads(envelope["result"]["content"][0]["text"])
+
+    def _confirmed_call(self, client, name, arguments):
+        preview = self._call(client, name, arguments)
+        assert preview["confirmation_required"] is True
+        return self._call(
+            client,
+            name,
+            {
+                **arguments,
+                "confirmation_token": preview["confirmation_token"],
+                "idempotency_key": f"{name}-rest-parity",
+            },
+        )
 
     def test_create_draft_with_proposed_round_trips_through_get_post(self, client_with_token, social_account):
         created = self._call(
@@ -470,10 +485,14 @@ class TestProposedPublishAtMcp:
         )
         assert created["proposed_publish_at"] == self._WHEN
         when = (timezone.now() + timedelta(hours=3)).isoformat().replace("+00:00", "Z")
-        scheduled = self._call(client_with_token, "schedule_draft", {"post_id": created["id"], "scheduled_at": when})
-        assert scheduled["scheduled_at"] is not None
-        assert scheduled["proposed_publish_at"] is None
+        scheduled = self._confirmed_call(
+            client_with_token,
+            "schedule_draft",
+            {"post_id": created["id"], "scheduled_at": when},
+        )
+        assert scheduled["replayed"] is False
         fetched = self._call(client_with_token, "get_post", {"post_id": created["id"]})
+        assert fetched["scheduled_at"] is not None
         assert fetched["proposed_publish_at"] is None
 
     def test_create_draft_naive_proposed_stored_as_utc(self, client_with_token, social_account):

@@ -1,0 +1,67 @@
+{% extends "layouts/settings.html" %}
+{% block title %}MCP - Settings - Brightbean{% endblock %}
+{% block content %}
+<div class="max-w-6xl">
+    <div class="flex items-start justify-between gap-6 mb-6">
+        <div>
+            <p class="text-xs font-semibold uppercase tracking-widest text-orange-600 mb-2">Agent access</p>
+            <h2 class="text-2xl font-semibold tracking-tight" style="color: var(--text-primary);">Model Context Protocol</h2>
+            <p class="text-sm mt-2 max-w-2xl" style="color: var(--text-tertiary);">Connect trusted AI clients to BrightBean with workspace-aware permissions, confirmations, and a complete operational trail.</p>
+        </div>
+        <span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold {% if effective_enabled %}text-emerald-700 bg-emerald-50{% else %}text-stone-600 bg-stone-100{% endif %}">
+            <span class="w-2 h-2 rounded-full {% if effective_enabled %}bg-emerald-500{% else %}bg-stone-400{% endif %}"></span>
+            {% if effective_enabled %}Available{% else %}Unavailable{% endif %}
+        </span>
+    </div>
+
+    {% include "settings_manager/mcp/_tabs.html" %}
+
+    {% if messages %}{% for message in messages %}<div class="mb-5 px-4 py-3 rounded-lg text-sm" style="background: var(--surface-1); border: 1px solid var(--border); color: var(--text-primary);">{{ message }}</div>{% endfor %}{% endif %}
+
+    <section class="mb-8 overflow-hidden" style="background: #1c1917; border-radius: var(--radius-xl); color: white;">
+        <div class="grid md:grid-cols-12 gap-0">
+            <div class="md:col-span-7 p-6 md:p-7">
+                <p class="text-xs uppercase tracking-widest text-stone-400 mb-3">Connection endpoint</p>
+                <div x-data="{ copied: false }" class="flex items-center gap-3">
+                    <code class="text-sm md:text-base break-all text-orange-200 flex-1">{{ endpoint }}</code>
+                    <button type="button" @click="navigator.clipboard.writeText('{{ endpoint|escapejs }}'); copied = true; setTimeout(() => copied = false, 1500)" class="px-3 py-1.5 rounded-md text-xs font-semibold bg-white/10 hover:bg-white/20 focus:outline-none focus:ring-2 focus:ring-orange-400" x-text="copied ? 'Copied' : 'Copy'">Copy</button>
+                </div>
+            </div>
+            <div class="md:col-span-5 grid grid-cols-2 border-t md:border-t-0 md:border-l border-white/10">
+                <div class="p-5 border-r border-white/10"><p class="text-xs text-stone-400 mb-1">Transport</p><p class="font-mono text-sm">{{ transport_backend }}</p></div>
+                <div class="p-5"><p class="text-xs text-stone-400 mb-1">Server</p><p class="font-mono text-sm">v{{ server_version }}</p></div>
+            </div>
+        </div>
+    </section>
+
+    <div class="grid lg:grid-cols-3 gap-5 mb-8">
+        <section class="lg:col-span-2 p-6" style="background: var(--surface-0); border: 1px solid var(--border); border-radius: var(--radius-xl);">
+            <div class="flex items-start justify-between gap-5">
+                <div>
+                    <h3 class="text-base font-semibold" style="color: var(--text-primary);">Organization access</h3>
+                    <p class="text-sm mt-1" style="color: var(--text-tertiary);">Controls MCP for every workspace in {{ request.org.name }}. The infrastructure switch always takes precedence.</p>
+                </div>
+                <span class="text-xs font-semibold px-2.5 py-1 rounded-full {% if organization_enabled %}text-emerald-700 bg-emerald-50{% else %}text-stone-600 bg-stone-100{% endif %}">{% if organization_enabled %}Enabled{% else %}Disabled{% endif %}</span>
+            </div>
+            {% if can_manage_org %}
+            <form method="post" class="mt-6">{% csrf_token %}
+                <input type="hidden" name="enabled" value="{% if organization_enabled %}false{% else %}true{% endif %}">
+                <button class="px-4 py-2 text-sm font-semibold rounded-full {% if organization_enabled %}text-red-700 bg-red-50 border border-red-200{% else %}text-orange-700 bg-orange-50 border border-orange-200{% endif %}">{% if organization_enabled %}Disable organization access{% else %}Enable organization access{% endif %}</button>
+            </form>
+            {% else %}<p class="text-xs mt-5" style="color: var(--text-tertiary);">You can inspect and restrict the workspaces you manage. Organization administrators control this switch.</p>{% endif %}
+        </section>
+        <section class="p-6" style="background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-xl);">
+            <p class="text-xs uppercase tracking-wider font-semibold" style="color: var(--text-tertiary);">Infrastructure</p>
+            <p class="text-lg font-semibold mt-3" style="color: var(--text-primary);">{% if infrastructure_enabled %}Server enabled{% else %}Server disabled{% endif %}</p>
+            <p class="text-xs mt-2" style="color: var(--text-tertiary);">Set by <code>MCP_SERVER_ENABLED</code> at deployment level. It cannot be overridden here.</p>
+        </section>
+    </div>
+
+    <section class="p-6" style="background: var(--surface-0); border: 1px solid var(--border); border-radius: var(--radius-xl);">
+        <div class="flex items-center justify-between gap-4 mb-5"><div><h3 class="text-base font-semibold" style="color: var(--text-primary);">Recent activity</h3><p class="text-sm mt-1" style="color: var(--text-tertiary);">Only identifiers and operational metadata are retained.</p></div><a href="{% url 'settings_manager:mcp_activity' %}" class="text-sm font-semibold text-orange-600">View all</a></div>
+        {% if recent_events %}<div class="divide-y" style="border-color: var(--border);">{% for event in recent_events %}<div class="py-3 flex items-center justify-between gap-4"><div class="min-w-0"><p class="text-sm font-medium truncate" style="color: var(--text-primary);">{{ event.name }}</p><p class="text-xs mt-0.5" style="color: var(--text-tertiary);">{{ event.workspace.name|default:"Organization" }} · {{ event.actor.email|default:"Unknown actor" }}</p></div><div class="text-right flex-shrink-0"><p class="text-xs font-semibold">{{ event.get_status_display }}</p><time class="text-xs" style="color: var(--text-tertiary);">{{ event.created_at|timesince }} ago</time></div></div>{% endfor %}</div>{% else %}<p class="text-sm py-6 text-center" style="color: var(--text-tertiary);">No MCP activity yet. Connect a client to begin.</p>{% endif %}
+    </section>
+
+    <div class="mt-8 text-sm" style="color: var(--text-tertiary);"><p><strong style="color: var(--text-secondary);">Client setup:</strong> use OAuth for user-bound multi-workspace access, or issue a workspace-pinned key from <a class="text-orange-600 underline" href="{% url 'api_keys:list' %}">API Keys</a>. Social account connections remain browser-only.</p></div>
+</div>
+{% endblock %}

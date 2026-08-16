@@ -1,0 +1,24 @@
+{% extends "layouts/settings.html" %}
+{% block title %}MCP Tools - Settings - Brightbean{% endblock %}
+{% block content %}
+<div class="max-w-7xl">
+    <div class="mb-6"><p class="text-xs font-semibold uppercase tracking-widest text-orange-600 mb-2">Capability policy</p><h2 class="text-2xl font-semibold tracking-tight" style="color: var(--text-primary);">MCP tools</h2><p class="text-sm mt-2 max-w-2xl" style="color: var(--text-tertiary);">Inspect risk, scopes, permissions, and confirmations. Organization restrictions always override workspace settings.</p></div>
+    {% include "settings_manager/mcp/_tabs.html" %}
+    {% if messages %}{% for message in messages %}<div class="mb-5 px-4 py-3 rounded-lg text-sm" style="background: var(--surface-1); border: 1px solid var(--border); color: var(--text-primary);">{{ message }}</div>{% endfor %}{% endif %}
+    <form method="get" class="flex flex-col sm:flex-row gap-3 mb-6">
+        <input name="q" value="{{ query }}" class="flex-1 rounded-xl border px-4 py-2.5 text-sm bg-white" style="border-color: var(--border);" placeholder="Search tools and descriptions">
+        <select name="workspace" class="rounded-xl border px-4 py-2.5 text-sm bg-white" style="border-color: var(--border);"><option value="">Organization policy</option>{% for workspace in available_workspaces %}<option value="{{ workspace.id }}" {% if selected_workspace.id == workspace.id %}selected{% endif %}>{{ workspace.name }}</option>{% endfor %}</select>
+        <button class="px-5 py-2.5 text-sm font-semibold rounded-full text-orange-700 bg-orange-50 border border-orange-200">Apply</button>
+    </form>
+    <div class="space-y-3">
+        {% for row in rows %}<article class="p-5" style="background: var(--surface-0); border: 1px solid var(--border); border-radius: var(--radius-xl);">
+            <div class="flex flex-col lg:flex-row lg:items-center gap-5">
+                <div class="flex-1 min-w-0"><div class="flex items-center gap-2 flex-wrap"><code class="font-semibold text-sm" style="color: var(--text-primary);">{{ row.tool.name }}</code><span class="text-xs px-2 py-0.5 rounded-full {% if row.tool.risk_level == 'high' %}text-red-700 bg-red-50{% elif row.tool.risk_level == 'medium' %}text-amber-700 bg-amber-50{% else %}text-stone-600 bg-stone-100{% endif %}">{{ row.tool.risk_level }} risk</span>{% if row.tool.confirmation_required %}<span class="text-xs px-2 py-0.5 rounded-full text-violet-700 bg-violet-50">Confirmation required</span>{% endif %}</div><p class="text-sm mt-2" style="color: var(--text-tertiary);">{{ row.tool.description }}</p><div class="flex flex-wrap gap-x-4 gap-y-1 mt-3 text-xs" style="color: var(--text-tertiary);"><span>Scope <code>{{ row.tool.required_scope }}</code></span><span>RBAC <code>{% if row.tool.required_permissions %}{{ row.tool.required_permissions|join:", " }}{% else %}none{% endif %}</code></span></div></div>
+                <div class="lg:w-72 flex items-center justify-between gap-4 p-3 rounded-lg" style="background: var(--surface-1);"><div><p class="text-xs font-semibold" style="color: var(--text-primary);">{% if selected_workspace %}{{ selected_workspace.name }}{% else %}Organization{% endif %}</p><p class="text-xs mt-0.5 {% if row.effective_enabled %}text-emerald-700{% else %}text-stone-500{% endif %}">{% if row.effective_enabled %}Available{% else %}Restricted{% endif %}</p></div>
+                    {% if selected_workspace and not row.organization_enabled %}<span class="text-xs font-medium" style="color: var(--text-tertiary);">Blocked by organization</span>{% elif selected_workspace or can_manage_org %}<form method="post">{% csrf_token %}<input type="hidden" name="scope" value="{% if selected_workspace %}workspace{% else %}organization{% endif %}"><input type="hidden" name="workspace_id" value="{% if selected_workspace %}{{ selected_workspace.id }}{% endif %}"><input type="hidden" name="tool_name" value="{{ row.tool.name }}"><input type="hidden" name="enabled" value="{% if selected_workspace %}{% if row.workspace_enabled %}false{% else %}true{% endif %}{% else %}{% if row.organization_enabled %}false{% else %}true{% endif %}{% endif %}"><button class="px-3 py-1.5 text-xs font-semibold rounded-full border" style="border-color: var(--border); color: var(--text-secondary);">{% if selected_workspace %}{% if row.workspace_enabled %}Restrict{% else %}Allow{% endif %}{% else %}{% if row.organization_enabled %}Disable{% else %}Enable{% endif %}{% endif %}</button></form>{% endif %}
+                </div>
+            </div>
+        </article>{% empty %}<div class="px-6 py-14 text-center rounded-xl" style="border: 1px solid var(--border);"><p class="text-sm font-medium">No tools match “{{ query }}”.</p></div>{% endfor %}
+    </div>
+</div>
+{% endblock %}

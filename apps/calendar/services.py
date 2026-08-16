@@ -344,6 +344,33 @@ def add_to_queue(post, queue, priority=False):
     return add_post_next_available(post, queue)
 
 
+def reschedule_platform_post(platform_post, scheduled_at):
+    """Move one reschedulable platform target and keep its queue mirror in sync."""
+    from django.db import transaction
+
+    from apps.composer.services import sync_post_scheduled_at
+
+    if not platform_post.is_reschedulable:
+        raise ValueError("Post cannot be rescheduled in its current status.")
+    with transaction.atomic():
+        fields = ["status", "scheduled_at", "updated_at"]
+        platform_post.scheduled_at = scheduled_at
+        if platform_post.status == "failed":
+            platform_post.publish_error = ""
+            platform_post.retry_count = 0
+            platform_post.next_retry_at = None
+            fields += ["publish_error", "retry_count", "next_retry_at"]
+        if platform_post.status in {"draft", "failed"} and platform_post.can_transition_to("scheduled"):
+            platform_post.transition_to("scheduled")
+        platform_post.save(update_fields=fields)
+        QueueEntry.objects.filter(
+            post=platform_post.post,
+            queue__social_account=platform_post.social_account,
+        ).update(assigned_slot_datetime=scheduled_at)
+        sync_post_scheduled_at(platform_post.post)
+    return platform_post
+
+
 def reorder_queue(queue, ordered_entry_ids):
     """Reassign the queue's occupied slot times to entries in a new order.
 

@@ -98,12 +98,15 @@ class TestDiscoveryMetadata:
         assert data["revocation_endpoint"].endswith("/oauth/revoke_token/")
         assert data["code_challenge_methods_supported"] == ["S256"]
         assert data["token_endpoint_auth_methods_supported"] == ["none"]
-        assert data["scopes_supported"] == ["mcp"]
+        assert data["scopes_supported"][-1] == "mcp"
+        assert "mcp.read" in data["scopes_supported"]
 
     def test_protected_resource_metadata(self):
         data = Client().get(PR_META_URL).json()
         assert data["resource"].endswith("/api/v1/mcp")
-        assert data["scopes_supported"] == ["mcp"]
+        assert data["scopes_supported"][-1] == "mcp"
+        assert "mcp.read" in data["scopes_supported"]
+        assert data["bearer_methods_supported"] == ["header"]
         assert data["authorization_servers"]
 
     def test_protected_resource_metadata_path_scoped(self):

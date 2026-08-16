@@ -1,23 +1,18 @@
 """Views for the Unified Social Inbox (F-3.1)."""
 
 import logging
-from datetime import timedelta
 
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.db.models import Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
-from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from apps.members.decorators import require_permission
 from apps.members.models import WorkspaceMembership
-from apps.notifications.engine import notify
-from apps.notifications.models import EventType
 from apps.social_accounts.models import SocialAccount
 from apps.workspaces.models import Workspace
-from providers import get_provider
 
 from .forms import (
     AssignForm,
@@ -31,10 +26,23 @@ from .forms import (
 )
 from .models import (
     InboxMessage,
-    InboxReply,
     InboxSLAConfig,
-    InternalNote,
     SavedReply,
+)
+from .services import (
+    _send_platform_reply,
+)
+from .services import (
+    add_note as add_note_service,
+)
+from .services import (
+    assign_message as assign_message_service,
+)
+from .services import (
+    send_reply as send_reply_service,
+)
+from .services import (
+    set_status as set_status_service,
 )
 
 logger = logging.getLogger(__name__)
@@ -208,16 +216,6 @@ def message_detail(request, workspace_id, message_id):
 
 # --- Reply ---
 
-# Message types answered on a comment edge rather than a messaging endpoint.
-_COMMENT_LIKE_TYPES = {
-    InboxMessage.MessageType.COMMENT,
-    InboxMessage.MessageType.MENTION,
-    InboxMessage.MessageType.REVIEW,
-}
-
-# Past this age Meta only accepts a reply tagged as written by a person.
-HUMAN_AGENT_AFTER = timedelta(hours=24)
-
 
 def _reply_failure_reason(exc: Exception) -> str:
     """A short, actionable reason for the user.
@@ -235,43 +233,6 @@ def _reply_failure_reason(exc: Exception) -> str:
     return "the platform rejected it. Try again, or reconnect the account if this keeps happening."
 
 
-def _send_platform_reply(message, body: str) -> str:
-    """Post ``body`` back to the platform and return the platform's reply ID.
-
-    Raises if the platform refuses it, so the caller can avoid recording a
-    reply that was never delivered.
-    """
-    from apps.publisher.engine import _resolve_publish_credentials
-
-    account = message.social_account
-    provider = get_provider(account.platform, _resolve_publish_credentials(account))
-
-    # The messaging endpoints address a person, not a message, so carry the
-    # sender's platform-scoped ID alongside the original payload.
-    extra = dict(message.extra or {})
-    if message.sender_handle:
-        extra.setdefault("recipient_id", message.sender_handle)
-
-    if message.message_type in _COMMENT_LIKE_TYPES:
-        result = provider.reply_to_comment(
-            access_token=account.oauth_access_token,
-            comment_id=message.platform_message_id,
-            text=body,
-            extra=extra,
-        )
-    else:
-        overdue = timezone.now() - message.received_at > HUMAN_AGENT_AFTER
-        result = provider.reply_to_message(
-            access_token=account.oauth_access_token,
-            message_id=message.platform_message_id,
-            text=body,
-            extra=extra,
-            human_agent=overdue,
-        )
-
-    return result.platform_message_id
-
-
 @login_required
 @require_permission("reply_from_inbox")
 @require_POST
@@ -286,17 +247,23 @@ def send_reply(request, workspace_id, message_id):
 
     body = form.cleaned_data["body"]
     account = message.social_account
+    reply = None
 
     # A reply is only recorded if the platform accepted it. Recording it
     # regardless would show the team a sent reply the customer never got.
     try:
-        platform_reply_id = _send_platform_reply(message, body)
+        reply = send_reply_service(
+            message=message,
+            author=request.user,
+            body=body,
+            sender=_send_platform_reply,
+        )
     except NotImplementedError:
         # The platform has no reply API (or none for this item type). Keep the
         # reply as a local record so the team still has their answer on file —
         # this is what the inbox did before replies were sent for real.
         logger.info("Provider %s cannot send replies; recording locally.", account.platform)
-        platform_reply_id = ""
+        reply = None
     except Exception as exc:
         logger.exception("Failed to send reply for message %s (%s)", message.id, account.platform)
         response = render(
@@ -312,22 +279,7 @@ def send_reply(request, workspace_id, message_id):
         response["HX-Reply-Failed"] = "1"
         return response
 
-    reply = InboxReply.objects.create(
-        inbox_message=message,
-        author=request.user,
-        body=body,
-        platform_reply_id=platform_reply_id,
-    )
-
-    # Auto-resolve on reply if configured
-    sla_config = InboxSLAConfig.objects.filter(workspace=workspace, is_active=True).first()
-    if sla_config and sla_config.auto_resolve_on_reply:
-        message.status = InboxMessage.Status.RESOLVED
-        message.save(update_fields=["status"])
-    elif message.status == InboxMessage.Status.UNREAD:
-        message.status = InboxMessage.Status.OPEN
-        message.save(update_fields=["status"])
-
+    assert reply is not None
     context = {"reply": reply, "workspace": workspace, "message": message}
     return render(request, "inbox/partials/_reply_item.html", context)
 
@@ -347,11 +299,7 @@ def add_note(request, workspace_id, message_id):
     if not form.is_valid():
         return HttpResponse("Invalid note.", status=400)
 
-    note = InternalNote.objects.create(
-        inbox_message=message,
-        author=request.user,
-        body=form.cleaned_data["body"],
-    )
+    note = add_note_service(message=message, author=request.user, body=form.cleaned_data["body"])
 
     context = {"note": note, "workspace": workspace, "message": message}
     return render(request, "inbox/partials/_note_item.html", context)
@@ -372,34 +320,14 @@ def assign_message(request, workspace_id, message_id):
     if not form.is_valid():
         return HttpResponse("Invalid assignment.", status=400)
 
-    assigned_to_id = form.cleaned_data.get("assigned_to")
-    if assigned_to_id:
-        # Verify the user is a workspace member
-        membership = (
-            WorkspaceMembership.objects.filter(workspace=workspace, user_id=assigned_to_id)
-            .select_related("user")
-            .first()
+    try:
+        message = assign_message_service(
+            message=message,
+            actor=request.user,
+            user_id=form.cleaned_data.get("assigned_to"),
         )
-        if not membership:
-            return HttpResponse("User is not a workspace member.", status=400)
-        message.assigned_to = membership.user
-    else:
-        message.assigned_to = None
-
-    message.save(update_fields=["assigned_to"])
-
-    # Notify the assignee
-    if message.assigned_to and message.assigned_to != request.user:
-        notify(
-            user=message.assigned_to,
-            event_type=EventType.NEW_INBOX_MESSAGE,
-            title=f"You were assigned a {message.get_message_type_display()}",
-            body=f"From {message.sender_name}: {message.body[:100]}",
-            data={
-                "message_id": str(message.id),
-                "workspace_id": str(workspace.id),
-            },
-        )
+    except ValueError:
+        return HttpResponse("User is not a workspace member.", status=400)
 
     context = _detail_context(workspace, message)
     return render(request, "inbox/partials/_message_panel.html", context)
@@ -420,8 +348,7 @@ def change_status(request, workspace_id, message_id):
     if not form.is_valid():
         return HttpResponse("Invalid status.", status=400)
 
-    message.status = form.cleaned_data["status"]
-    message.save(update_fields=["status"])
+    message = set_status_service(message=message, status=form.cleaned_data["status"])
 
     context = _detail_context(workspace, message)
     return render(request, "inbox/partials/_message_panel.html", context)

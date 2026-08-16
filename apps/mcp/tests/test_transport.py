@@ -19,6 +19,7 @@ from apps.api_keys import services
 from apps.composer.models import PlatformPost, Post
 from apps.mcp.protocol import (
     INVALID_PARAMS,
+    INVALID_REQUEST,
     METHOD_NOT_FOUND,
     PARSE_ERROR,
 )
@@ -61,6 +62,34 @@ def _post(client: Client, body) -> tuple[int, dict | list | None]:
     if r.status_code == 202 or not r.content:
         return r.status_code, None
     return r.status_code, r.json()
+
+
+def _confirm_tool(client: Client, name: str, arguments: dict, *, idempotency_key: str) -> tuple[dict, dict]:
+    """Exercise the public preview/confirm contract and return both payloads."""
+    status, preview_envelope = _post(client, _rpc("tools/call", {"name": name, "arguments": arguments}))
+    assert status == 200
+    assert isinstance(preview_envelope, dict)
+    assert "error" not in preview_envelope, preview_envelope
+    preview = json.loads(preview_envelope["result"]["content"][0]["text"])
+    assert preview["confirmation_required"] is True
+    status, confirmed_envelope = _post(
+        client,
+        _rpc(
+            "tools/call",
+            {
+                "name": name,
+                "arguments": {
+                    **arguments,
+                    "confirmation_token": preview["confirmation_token"],
+                    "idempotency_key": idempotency_key,
+                },
+            },
+        ),
+    )
+    assert status == 200
+    assert isinstance(confirmed_envelope, dict)
+    assert "error" not in confirmed_envelope, confirmed_envelope
+    return preview, json.loads(confirmed_envelope["result"]["content"][0]["text"])
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +272,11 @@ class TestProtocolMechanics:
         r = client_with_token.post(MCP_URL, data="[]", content_type="application/json")
         assert r.status_code == 400
 
+    def test_non_object_batch_member_is_rejected_without_breaking_activity_capture(self, client_with_token):
+        status, body = _post(client_with_token, [42])
+        assert status == 200
+        assert body[0]["error"]["code"] == INVALID_REQUEST
+
 
 # ---------------------------------------------------------------------------
 # Tools — list + dispatch
@@ -337,8 +371,9 @@ class TestCreateDraftTool:
                 },
             ),
         )
-        assert body["error"]["code"] == INVALID_PARAMS
-        assert "allowlist" in body["error"]["message"].lower()
+        error = body["result"]["structuredContent"]["error"]
+        assert error["code"] == "forbidden"
+        assert error["message"] == "This credential cannot use that tool."
         assert Post.objects.count() == 0
 
     def test_missing_required_arguments_returns_invalid_params(self, client_with_token):
@@ -358,23 +393,21 @@ class TestCreateDraftTool:
 class TestSchedulePostTool:
     def test_creates_a_scheduled_post(self, client_with_token, social_account):
         when = (timezone.now() + timedelta(hours=2)).isoformat()
-        status, body = _post(
+        arguments = {
+            "social_account_id": str(social_account.id),
+            "caption": "scheduled via mcp",
+            "scheduled_at": when,
+        }
+        preview, confirmed = _confirm_tool(
             client_with_token,
-            _rpc(
-                "tools/call",
-                {
-                    "name": "schedule_post",
-                    "arguments": {
-                        "social_account_id": str(social_account.id),
-                        "caption": "scheduled via mcp",
-                        "scheduled_at": when,
-                    },
-                },
-            ),
+            "schedule_post",
+            arguments,
+            idempotency_key="schedule-post-once",
         )
-        assert "error" not in body, body
-        inner = json.loads(body["result"]["content"][0]["text"])
-        assert inner["platform_posts"][0]["status"] == "scheduled"
+        assert Post.objects.count() == 1
+        assert preview["preview"] == {"social_account_id": str(social_account.id), "scheduled_at": when}
+        assert confirmed["replayed"] is False
+        assert Post.objects.get().platform_posts.get().status == "scheduled"
 
 
 # ---------------------------------------------------------------------------
@@ -673,20 +706,16 @@ class TestScheduleDraftTool:
 
     def test_promotes_draft_to_scheduled(self, client_with_token, draft_post):
         when = (timezone.now() + timedelta(hours=2)).isoformat()
-        status, body = _post(
+        preview, confirmed = _confirm_tool(
             client_with_token,
-            _rpc(
-                "tools/call",
-                {
-                    "name": "schedule_draft",
-                    "arguments": {"post_id": str(draft_post.id), "scheduled_at": when},
-                },
-            ),
+            "schedule_draft",
+            {"post_id": str(draft_post.id), "scheduled_at": when},
+            idempotency_key="schedule-draft-once",
         )
-        assert status == 200
-        assert "error" not in body, body
-        inner = json.loads(body["result"]["content"][0]["text"])
-        assert inner["platform_posts"][0]["status"] == "scheduled"
+        draft_post.refresh_from_db()
+        assert draft_post.platform_posts.get().status == "scheduled"
+        assert preview["preview"]["post_id"] == str(draft_post.id)
+        assert confirmed["replayed"] is False
         draft_post.refresh_from_db()
         assert draft_post.platform_posts.get().status == "scheduled"
 
@@ -694,13 +723,29 @@ class TestScheduleDraftTool:
         # ``scheduled_post`` fixture is already in scheduled state with no
         # draft children — schedule_draft should refuse.
         when = (timezone.now() + timedelta(hours=2)).isoformat()
-        status, body = _post(
+        status, preview_body = _post(
             client_with_token,
             _rpc(
                 "tools/call",
                 {
                     "name": "schedule_draft",
                     "arguments": {"post_id": str(scheduled_post.id), "scheduled_at": when},
+                },
+            ),
+        )
+        preview = json.loads(preview_body["result"]["content"][0]["text"])
+        status, body = _post(
+            client_with_token,
+            _rpc(
+                "tools/call",
+                {
+                    "name": "schedule_draft",
+                    "arguments": {
+                        "post_id": str(scheduled_post.id),
+                        "scheduled_at": when,
+                        "confirmation_token": preview["confirmation_token"],
+                        "idempotency_key": "invalid-schedule-draft",
+                    },
                 },
             ),
         )
@@ -725,16 +770,16 @@ class TestScheduleDraftTool:
 @pytest.mark.django_db
 class TestCancelPostTool:
     def test_cancel_transitions_scheduled_to_draft(self, client_with_token, scheduled_post):
-        status, body = _post(
+        preview, confirmed = _confirm_tool(
             client_with_token,
-            _rpc(
-                "tools/call",
-                {"name": "cancel_post", "arguments": {"post_id": str(scheduled_post.id)}},
-            ),
+            "cancel_post",
+            {"post_id": str(scheduled_post.id)},
+            idempotency_key="cancel-post-once",
         )
-        assert "error" not in body, body
-        inner = json.loads(body["result"]["content"][0]["text"])
-        assert inner["platform_posts"][0]["status"] == "draft"
+        assert preview["preview"]["post_id"] == str(scheduled_post.id)
+        assert confirmed["replayed"] is False
+        scheduled_post.refresh_from_db()
+        assert scheduled_post.platform_posts.get().status == "draft"
 
 
 # ---------------------------------------------------------------------------
@@ -798,8 +843,9 @@ class TestPermissionGating:
                 },
             ),
         )
-        assert body["error"]["code"] == INVALID_PARAMS
-        assert "permission denied" in body["error"]["message"].lower()
+        error = body["result"]["structuredContent"]["error"]
+        assert error["code"] == "forbidden"
+        assert error["message"] == "This credential cannot use that tool."
 
     def test_read_only_key_can_still_list_accounts(self, read_only_client, social_account):
         """list_accounts has no permission requirement — it's pure scope echo.
@@ -942,8 +988,9 @@ class TestAnalyticsTools:
                 {"name": "get_account_analytics", "arguments": {"account_id": str(second_account.id)}},
             ),
         )
-        assert body["error"]["code"] == INVALID_PARAMS
-        assert "allowlist" in body["error"]["message"].lower()
+        error = body["result"]["structuredContent"]["error"]
+        assert error["code"] == "forbidden"
+        assert error["message"] == "This credential cannot use that tool."
 
     def test_get_account_analytics_rejects_invalid_days(self, analytics_client, instagram_account):
         status, body = _post(
@@ -1052,8 +1099,9 @@ class TestAnalyticsPermissionGate:
                 {"name": "get_account_analytics", "arguments": {"account_id": str(instagram_account.id)}},
             ),
         )
-        assert body["error"]["code"] == INVALID_PARAMS
-        assert "view_analytics" in body["error"]["message"].lower()
+        error = body["result"]["structuredContent"]["error"]
+        assert error["code"] == "forbidden"
+        assert error["message"] == "This credential cannot use that tool."
 
     def test_get_post_analytics_denied_without_view_analytics(
         self, no_view_analytics_client, workspace, instagram_account
@@ -1064,5 +1112,6 @@ class TestAnalyticsPermissionGate:
             no_view_analytics_client,
             _rpc("tools/call", {"name": "get_post_analytics", "arguments": {"post_id": str(post.id)}}),
         )
-        assert body["error"]["code"] == INVALID_PARAMS
-        assert "view_analytics" in body["error"]["message"].lower()
+        error = body["result"]["structuredContent"]["error"]
+        assert error["code"] == "forbidden"
+        assert error["message"] == "This credential cannot use that tool."
