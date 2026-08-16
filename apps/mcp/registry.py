@@ -58,6 +58,7 @@ class Tool:
     required_permission: str | None = None
     required_permissions: tuple[str, ...] = ()
     confirmation_required: bool = False
+    workspace_scoped: bool = False
 
     def __post_init__(self) -> None:
         """Keep the old singular permission accessor during policy migration."""
@@ -196,7 +197,19 @@ for _media_tool in {"finalize_media_upload", "get_media", "upload_media"}:
 
 def _with_builtin_metadata(tool: Tool) -> Tool:
     """Enrich the original surface while handlers migrate incrementally."""
-    tool = replace(tool, output_schema=_OUTPUT_SCHEMAS.get(tool.name, tool.output_schema))
+    properties = dict(tool.input_schema.get("properties", {}))
+    properties["workspace_id"] = {
+        "type": "string",
+        "format": "uuid",
+        "description": "Explicit workspace for OAuth callers; optional for a pinned API key.",
+    }
+    input_schema = {**tool.input_schema, "properties": properties}
+    tool = replace(
+        tool,
+        input_schema=input_schema,
+        output_schema=_OUTPUT_SCHEMAS.get(tool.name, tool.output_schema),
+        workspace_scoped=True,
+    )
     if tool.name in _READ_TOOLS:
         permission = "view_analytics" if tool.name.endswith("analytics") else None
         return replace(

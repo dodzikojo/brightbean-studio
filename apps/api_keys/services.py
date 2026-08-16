@@ -399,7 +399,9 @@ def _issuer_still_authorized(api_key: ApiKey) -> bool:
         return False
     return WorkspaceMembership.objects.filter(
         user_id=api_key.issued_by_id,
+        user__is_active=True,
         workspace_id=api_key.workspace_id,
+        workspace__is_archived=False,
     ).exists()
 
 

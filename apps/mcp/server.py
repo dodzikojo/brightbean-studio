@@ -73,7 +73,7 @@ class BrightBeanAccessToken(AccessToken):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    actor: Any = Field(exclude=True, repr=False)
+    principal: Any = Field(exclude=True, repr=False)
     django_request: ASGIRequest = Field(exclude=True, repr=False)
 
 
@@ -110,6 +110,7 @@ class RequestBoundaryMiddleware:
                         await sync_to_async(enforce_http_rate_limits, thread_sensitive=True)(
                             access_token.django_request,
                             is_write=True,
+                            include_workspace=False,
                         )
                     except HttpError as exc:
                         if exc.status_code != 429:
@@ -294,14 +295,22 @@ def _call_tool_sync(access_token: BrightBeanAccessToken, name: str, arguments: d
 
     try:
         _validate_tool_arguments(tool.input_schema, arguments)
+        handler_arguments = dict(arguments)
+        workspace_id = handler_arguments.pop("workspace_id", None)
+        if tool.workspace_scoped:
+            from apps.mcp.workspace import build_tool_context
+
+            context = build_tool_context(
+                access_token.principal,
+                workspace_id,
+                request,
+                is_write=not tool.annotations.read_only,
+            )
+        else:
+            context = {"principal": access_token.principal, "request": request}
         result = tool.handler(
-            arguments,
-            {
-                "api_key": request.api_key,  # type: ignore[attr-defined]
-                "workspace": request.workspace,  # type: ignore[attr-defined]
-                "membership": request.workspace_membership,  # type: ignore[attr-defined]
-                "request": request,
-            },
+            handler_arguments,
+            context,
         )
     except _ToolValidationError as exc:
         raise MCPError(code=INVALID_PARAMS, message=f"tools/call '{name}': {exc}") from exc
@@ -399,17 +408,20 @@ def _authenticate_sync(
         request_scope["raw_path"] = original_path.encode("ascii", errors="ignore")
         request_scope["root_path"] = ""
     request = ASGIRequest(request_scope, BytesIO(body))
-    actor = McpAuth().authenticate(request, token)
-    if actor is None:
+    principal = McpAuth().authenticate(request, token)
+    if principal is None:
         return None
-    request.auth = actor  # type: ignore[attr-defined]
+    request.auth = principal  # type: ignore[attr-defined]
+    client_id = str(principal.api_key.id) if principal.api_key is not None else None
+    if client_id is None and principal.oauth_client is not None:
+        client_id = str(principal.oauth_client.client_id)
     return BrightBeanAccessToken(
         token=token,
-        client_id=str(actor.id),
-        scopes=["mcp"],
+        client_id=client_id or str(principal.id),
+        scopes=sorted(principal.granted_scopes),
         resource=resource_url,
-        subject=str(actor.issued_by_id) if actor.issued_by_id else None,
-        actor=actor,
+        subject=str(principal.user.pk),
+        principal=principal,
         django_request=request,
     )
 

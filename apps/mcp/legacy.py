@@ -98,7 +98,20 @@ def _tools_call(params: dict, context: dict[str, Any]) -> dict:
     except _ToolValidationError as exc:
         raise JsonRpcError(INVALID_PARAMS, f"tools/call '{name}': {exc}") from exc
     try:
-        return tool.handler(arguments, context)
+        handler_arguments = dict(arguments)
+        workspace_id = handler_arguments.pop("workspace_id", None)
+        if tool.workspace_scoped:
+            from apps.mcp.workspace import build_tool_context
+
+            tool_context = build_tool_context(
+                context["principal"],
+                workspace_id,
+                context["request"],
+                is_write=not tool.annotations.read_only,
+            )
+        else:
+            tool_context = context
+        return tool.handler(handler_arguments, tool_context)
     except DomainError as exc:
         return domain_error_result(exc)
 
@@ -169,9 +182,7 @@ def mcp_endpoint(request: HttpRequest):
     one token, as Codex review flagged.
     """
     context: dict[str, Any] = {
-        "api_key": request.api_key,  # type: ignore[attr-defined]  # set by ApiKeyAuth
-        "workspace": request.workspace,  # type: ignore[attr-defined]
-        "membership": request.workspace_membership,  # type: ignore[attr-defined]
+        "principal": request.mcp_principal,  # type: ignore[attr-defined]
         "request": request,
     }
 
@@ -180,20 +191,20 @@ def mcp_endpoint(request: HttpRequest):
     except json.JSONDecodeError:
         # Charge the bad-request as one HTTP-tier hit so a flood of
         # malformed bodies still trips the throttle.
-        enforce_http_rate_limits(request, is_write=True)
+        enforce_http_rate_limits(request, is_write=True, include_workspace=False)
         return JsonResponse(make_error(None, PARSE_ERROR, "Invalid JSON"), status=400)
 
     # Batch.
     if isinstance(body, list):
         if not body:
-            enforce_http_rate_limits(request, is_write=True)
+            enforce_http_rate_limits(request, is_write=True, include_workspace=False)
             return JsonResponse(make_error(None, INVALID_REQUEST, "Empty batch"), status=400)
         responses = []
         for msg in body:
             # One rate-limit charge per JSON-RPC message — agents that
             # batch 100 calls into one HTTP request still consume 100
             # tokens, exactly as if they had sent 100 separate POSTs.
-            enforce_http_rate_limits(request, is_write=True)
+            enforce_http_rate_limits(request, is_write=True, include_workspace=False)
             r = dispatch(msg, context, METHODS)
             # Codex fix: always audit, even notifications (r is None),
             # and derive the status code from the dispatch envelope so
@@ -208,7 +219,7 @@ def mcp_endpoint(request: HttpRequest):
 
     # Single message.
     if isinstance(body, dict):
-        enforce_http_rate_limits(request, is_write=True)
+        enforce_http_rate_limits(request, is_write=True, include_workspace=False)
         response = dispatch(body, context, METHODS)
         audit_status = _status_for_response(response)
         _log_mcp_audit(request, body, status_code=audit_status)
@@ -217,7 +228,7 @@ def mcp_endpoint(request: HttpRequest):
             return HttpResponse(status=202)
         return JsonResponse(response, status=200)
 
-    enforce_http_rate_limits(request, is_write=True)
+    enforce_http_rate_limits(request, is_write=True, include_workspace=False)
     return JsonResponse(
         make_error(None, INVALID_REQUEST, "Body must be a JSON object or array"),
         status=400,
@@ -244,6 +255,23 @@ def _status_for_response(response: dict | None) -> int:
     if not isinstance(response, dict):
         return 200
     err = response.get("error")
+    if not isinstance(err, dict):
+        result = response.get("result")
+        if isinstance(result, dict) and result.get("isError") is True:
+            structured = result.get("structuredContent")
+            err = structured.get("error") if isinstance(structured, dict) else None
+            if isinstance(err, dict):
+                domain_code = err.get("code")
+                if not isinstance(domain_code, str):
+                    return 400
+                return {
+                    "forbidden": 403,
+                    "workspace_required": 422,
+                    "invalid_request": 422,
+                    "rate_limited": 429,
+                    "resource_not_found": 404,
+                    "tool_disabled": 403,
+                }.get(domain_code, 400)
     if not isinstance(err, dict):
         return 200
     code = err.get("code")

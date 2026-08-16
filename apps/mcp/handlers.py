@@ -52,8 +52,8 @@ def _require_perm(context: dict[str, Any], permission_key: str) -> None:
     Mirrors REST's ``_require_perm`` so MCP can't be used to bypass
     permissions that the REST surface enforces.
     """
-    membership = context["membership"]
-    if not membership.effective_permissions.get(permission_key, False):
+    workspace_context = context["workspace_context"]
+    if permission_key not in workspace_context.effective_permissions:
         raise JsonRpcError(INVALID_PARAMS, f"Permission denied: {permission_key}")
 
 
@@ -66,12 +66,16 @@ def _parse_uuid(value: Any, field_name: str) -> UUID:
         raise JsonRpcError(INVALID_PARAMS, f"{field_name} is not a valid UUID") from exc
 
 
-def _resolve_allowed_account(api_key, social_account_id_str: str) -> SocialAccount:
+def _resolve_allowed_account(workspace_context, social_account_id_str: str) -> SocialAccount:
     sa_id = _parse_uuid(social_account_id_str, "social_account_id")
-    allowed = {sa.id for sa in api_key.social_accounts.all()}
-    if sa_id not in allowed:
-        raise JsonRpcError(INVALID_PARAMS, "social_account_id is not in this API key's allowlist")
-    return SocialAccount.objects.get(id=sa_id)
+    try:
+        return SocialAccount.objects.get(
+            id=sa_id,
+            workspace_id=workspace_context.workspace_id,
+            id__in=workspace_context.allowed_account_ids,
+        )
+    except SocialAccount.DoesNotExist as exc:
+        raise JsonRpcError(INVALID_PARAMS, "social_account_id is not in this API key's allowlist") from exc
 
 
 def _resolve_media_folder(workspace, args: dict):
@@ -109,8 +113,8 @@ def _can_view_internal_notes(context: dict[str, Any]) -> bool:
     internal notes (i.e. not client/viewer). ``get_post`` isn't permission-
     gated, so without this an OAuth client/viewer could read team notes.
     """
-    membership = context.get("membership")
-    return bool(membership and membership.effective_permissions.get("create_posts", False))
+    workspace_context = context.get("workspace_context")
+    return bool(workspace_context and "create_posts" in workspace_context.effective_permissions)
 
 
 def _serialize_post(post: Post, context: dict[str, Any]) -> dict:

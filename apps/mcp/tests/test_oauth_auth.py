@@ -52,8 +52,8 @@ def _post(client: Client, body) -> tuple[int, dict | list | None]:
 def _make_user_with_workspace(email: str, role: str):
     """Create a user + org + workspace + membership + one connected account.
 
-    Sets ``last_workspace_id`` so the OAuth resolver picks this workspace, and
-    returns ``(user, workspace, social_account)``.
+    Returns ``(user, workspace, social_account)``. Any signal-created default
+    membership is removed so omission has exactly-one-workspace semantics.
     """
     from apps.accounts.models import User
     from apps.organizations.models import Organization
@@ -66,6 +66,7 @@ def _make_user_with_workspace(email: str, role: str):
         name=email,
         tos_accepted_at=timezone.now(),
     )
+    WorkspaceMembership.objects.filter(user=user).delete()
     org = Organization.objects.create(name=f"Org {email}")
     ws = Workspace.objects.create(name=f"WS {email}", organization=org)
     OrgMembership.objects.create(user=user, organization=org, org_role=OrgMembership.OrgRole.OWNER)
@@ -143,7 +144,7 @@ class TestMcpOAuthChallenge:
         r = c.post(MCP_URL, data=json.dumps(_rpc("ping")), content_type="application/json")
         assert r.status_code == 401
 
-    def test_token_for_user_without_workspace_returns_401(self):
+    def test_token_for_user_without_workspace_authenticates_but_scoped_call_requires_workspace(self):
         # New users get a default workspace via a post_save signal, so simulate
         # an offboarded user (token still live) by clearing their memberships —
         # this exercises McpAuth's "no usable workspace -> refuse auth" branch.
@@ -158,8 +159,12 @@ class TestMcpOAuthChallenge:
         WorkspaceMembership.objects.filter(user=user).delete()
         raw = _mint_oauth_token(user)
         c = _SecureClient(HTTP_AUTHORIZATION=f"Bearer {raw}")
-        r = c.post(MCP_URL, data=json.dumps(_rpc("ping")), content_type="application/json")
-        assert r.status_code == 401
+        status, ping = _post(c, _rpc("ping"))
+        assert status == 200
+        assert ping["result"] == {}
+        _status, body = _post(c, _rpc("tools/call", {"name": "list_accounts", "arguments": {}}))
+        payload = json.loads(body["result"]["content"][0]["text"])
+        assert payload["error"]["code"] == "workspace_required"
 
 
 @pytest.mark.django_db

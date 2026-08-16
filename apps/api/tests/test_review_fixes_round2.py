@@ -369,7 +369,7 @@ class TestMcpBatchRateLimit:
 
         calls = {"n": 0}
 
-        def _counting(request, *, is_write):
+        def _counting(request, *, is_write, **kwargs):
             calls["n"] += 1
 
         monkeypatch.setattr(_limits, "enforce_http_rate_limits", _counting)
@@ -395,7 +395,7 @@ class TestMcpBatchRateLimit:
 
         calls = {"n": 0}
 
-        def _counting(request, *, is_write):
+        def _counting(request, *, is_write, **kwargs):
             calls["n"] += 1
 
         monkeypatch.setattr(_limits, "enforce_http_rate_limits", _counting)

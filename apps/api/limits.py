@@ -215,7 +215,7 @@ def _override_or(api_key: ApiKey, attr: str, default: str) -> str:
     return default
 
 
-def enforce_http_rate_limits(request: HttpRequest, *, is_write: bool) -> None:
+def enforce_http_rate_limits(request: HttpRequest, *, is_write: bool, include_workspace: bool = True) -> None:
     """Stack the HTTP-level tiers and raise 429 if any trip.
 
     Centralized here so routers don't each re-import django-ratelimit
@@ -245,12 +245,18 @@ def enforce_http_rate_limits(request: HttpRequest, *, is_write: bool) -> None:
                 retry_after=60,
             ),
         )
-    if is_write and is_ratelimited(
-        request=request,
-        group="agent_api:workspace:w",
-        key=_ratelimit_key_workspace_writes,
-        rate=WORKSPACE_AGG_WRITE_RATE,
-        increment=True,
+    workspace_id = getattr(api_key, "workspace_id", None)
+    if (
+        is_write
+        and include_workspace
+        and workspace_id is not None
+        and is_ratelimited(
+            request=request,
+            group="agent_api:workspace:w",
+            key=_ratelimit_key_workspace_writes,
+            rate=WORKSPACE_AGG_WRITE_RATE,
+            increment=True,
+        )
     ):
         raise HttpError(
             429,
@@ -261,7 +267,6 @@ def enforce_http_rate_limits(request: HttpRequest, *, is_write: bool) -> None:
                 retry_after=60,
             ),
         )
-    # Global instance cap — optional, env-driven.
     global_cap = getattr(settings, "BB_API_LIMIT", None)
     if global_cap and is_ratelimited(
         request=request,
@@ -279,6 +284,27 @@ def enforce_http_rate_limits(request: HttpRequest, *, is_write: bool) -> None:
                 retry_after=60,
             ),
         )
+
+
+def enforce_workspace_write_rate_limit(request: HttpRequest, workspace_id) -> None:
+    """Charge the aggregate tier after an MCP tool resolves its workspace."""
+    if is_ratelimited(
+        request=request,
+        group="agent_api:workspace:w",
+        key=lambda _group, _request: f"ws:{workspace_id}:w",
+        rate=WORKSPACE_AGG_WRITE_RATE,
+        increment=True,
+    ):
+        raise HttpError(
+            429,
+            _format_quota_message(
+                tier="per_workspace_writes",
+                limit=_parse_rate_num(WORKSPACE_AGG_WRITE_RATE),
+                remaining=0,
+                retry_after=60,
+            ),
+        )
+    # Global instance cap — optional, env-driven.
 
 
 def _parse_rate_num(rate: str) -> int:

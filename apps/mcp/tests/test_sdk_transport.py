@@ -324,7 +324,9 @@ class TestSdkTransport:
         assert result["isError"] is False
         assert {account["id"] for account in payload["accounts"]} == {str(social_account.id)}
         assert enforce_rate_limits.call_count == 2
-        assert all(call.kwargs == {"is_write": True} for call in enforce_rate_limits.call_args_list)
+        assert all(
+            call.kwargs == {"is_write": True, "include_workspace": False} for call in enforce_rate_limits.call_args_list
+        )
         assert ApiKeyAuditLog.objects.filter(
             api_key=issued_key.api_key,
             action="mcp.tools/call:list_accounts",
@@ -922,16 +924,19 @@ class TestSdkOAuthBridge:
         )
         from apps.api.auth import _resolve_oauth_actor
 
-        actor = _resolve_oauth_actor(raw_token)
-        assert actor is not None
-        assert actor.workspace_id == membership.workspace_id
-        assert {account.id for account in actor.social_accounts.all()} == {social_account.id}
+        principal = _resolve_oauth_actor(raw_token)
+        assert principal is not None
+        assert principal.workspace_id is None
+        assert membership.workspace_id in {item.workspace.id for item in principal.authorized_workspaces}
 
         with _test_client(_sdk_app(), base_url="https://testserver") as client:
             response = client.post(
                 MCP_PATH,
                 headers=_auth_headers(raw_token),
-                json=_rpc("tools/call", {"name": "list_accounts", "arguments": {}}),
+                json=_rpc(
+                    "tools/call",
+                    {"name": "list_accounts", "arguments": {"workspace_id": str(membership.workspace_id)}},
+                ),
             )
 
         assert response.status_code == 200, response.text
