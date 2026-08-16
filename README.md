@@ -660,35 +660,95 @@ All write endpoints accept `idempotency_key` (or `Idempotency-Key` header) for s
 
 ### MCP Tools
 
-The MCP server lives at `POST {APP_URL}/api/v1/mcp` and speaks JSON-RPC 2.0 over stateless Streamable HTTP. The production web process serves Django and MCP together through ASGI. `MCP_TRANSPORT_BACKEND=legacy|sdk_v2` provides a rollback-safe transport switch, while `MCP_SERVER_ENABLED=false` disables the MCP endpoint without affecting the rest of BrightBean. The SDK transport implements the standard `initialize`, `tools/list`, `tools/call`, and `ping` methods. Tools:
+The MCP server lives at `{APP_URL}/api/v1/mcp` and uses stateless Streamable
+HTTP through the official MCP Python SDK. Both slash and no-slash endpoint
+forms are supported. BrightBean and MCP share the same ASGI web process;
+`MCP_TRANSPORT_BACKEND=legacy|sdk_v2` is the rollback switch and
+`MCP_SERVER_ENABLED=false` disables MCP without disabling the dashboard or REST
+API.
 
-| Tool | Purpose | Permission |
-|---|---|---|
-| `list_accounts` | List social accounts this API key can act on | — |
-| `create_draft` | Create a draft post (caption, title, media, first comment, optional proposed publish time) | `create_posts` |
-| `schedule_post` | Create and schedule a post in one step | `create_posts` + `publish_directly` |
-| `schedule_draft` | Schedule an existing draft | `create_posts` + `publish_directly` |
-| `get_post` | Retrieve a post with aggregate status and per-platform state | — |
-| `list_posts` | List posts newest-first, with optional status filter and cursor pagination | — |
-| `cancel_post` | Revert a scheduled post back to draft | `create_posts` |
-| `search_media` | Find media assets by query, type, tags, or folder | — |
-| `get_media` | Retrieve a single media asset by ID | — |
-| `upload_media` | Upload a small base64-encoded file (≤ 1 MB raw). For larger files, use REST `POST /media`. | `upload_media` |
-| `get_account_analytics` | Channel analytics over a rolling 7–90 day window | `view_analytics` |
-| `get_post_analytics` | Per-platform metrics for a single post (safe for polling drafts) | `view_analytics` |
+The server exposes typed structured output, text fallbacks, cursor pagination,
+resource links, machine-readable errors, and these tool groups:
+
+- Discovery: `list_workspaces`, `get_workspace_context`, `list_accounts`,
+  `get_account_health`
+- Ideas and content: `list_ideas`, `create_idea`, `update_idea`,
+  `convert_idea_to_draft`, `create_draft`, `update_draft`, `clone_post`,
+  `get_post`, `list_posts`
+- Editorial: `list_post_comments`, `add_post_comment`, `submit_for_review`,
+  `approve_post`, `request_changes`, `reject_post`
+- Publishing and calendar: `schedule_post`, `schedule_draft`, `publish_post`,
+  `cancel_post`, `get_calendar`, `list_queues`, `enqueue_post`,
+  `reschedule_post`
+- Media: `search_media`, `get_media`, `upload_media`,
+  `request_media_upload`, `finalize_media_upload`
+- Analytics: `get_workspace_analytics`, `get_account_analytics`,
+  `get_post_analytics`, `get_best_times`
+- Inbox: `list_inbox`, `get_inbox_message`, `add_inbox_note`,
+  `assign_inbox_message`, `set_inbox_status`, `send_inbox_reply`
+
+MCP deliberately exposes no account connection/disconnection or destructive
+delete tools. Social OAuth connections remain browser-only.
+
+#### Workspace routing and permissions
+
+API keys are pinned to one workspace and their configured social-account
+allowlist. OAuth connections can discover every non-archived workspace where
+the signed-in user is a member. Pass `workspace_id` to workspace-scoped tools;
+it may be omitted only for a workspace-pinned API key or an OAuth user with
+exactly one accessible workspace. Otherwise BrightBean returns
+`workspace_required` with safe workspace identifiers. MCP requests never read
+or change the dashboard's `last_workspace_id`.
+
+OAuth capability scopes are `mcp.read`, `mcp.content`, `mcp.publish`,
+`mcp.inbox.reply`, and `mcp.admin`. The legacy `mcp` scope remains a broad
+compatibility alias. Every call is also intersected with current organization
+and workspace policy, user RBAC, and the credential's account allowlist.
+
+Scheduling, publish-now, inbox replies, approvals/rejections, and other
+externally consequential transitions use a two-step contract. The first call,
+without `confirmation_token`, returns a redacted preview, payload hash,
+one-use token, and expiry without mutating. Repeat the same arguments with that
+token and an `idempotency_key` to execute exactly once.
+
+#### Resources and prompts
+
+Authorized clients can read `brightbean://workspaces` plus workspace context,
+accounts, calendar, post, analytics, and inbox resources beneath
+`brightbean://workspaces/{workspace_id}/...`.
+
+The `campaign_plan`, `draft_social_post`, `weekly_performance_review`, and
+`triage_inbox` prompts produce guidance and resource references only; prompts
+never mutate BrightBean.
 
 ### Connecting an MCP client
 
-The server is at `{APP_URL}/api/v1/mcp` and supports two authentication modes — pick whichever your client uses.
+The server supports OAuth user connections and workspace-pinned API keys.
 
-**Claude Desktop (and other native OAuth connectors).** In Claude Desktop open **Settings → Connectors → Add custom connector**, name it, and enter the server URL `{APP_URL}/api/v1/mcp`. Claude registers itself (Dynamic Client Registration) and opens a browser to log in to BrightBean Studio and approve access — **no API key required**. Any Studio user can connect; the connection acts with **their own** workspace permissions (read-only roles get the read tools, while posting/scheduling/uploading require the matching permission), operating on their last-active workspace. Requires Studio to be served over a public **https** URL.
+**Codex.** Add the remote server to your Codex config, then complete the
+browser-based BrightBean login and consent flow:
 
-**Claude Code, Cursor, custom agents (static API key).** Point the client at the same URL and send an API key as a Bearer token (`Authorization: Bearer bb_studio_...`). For Claude Code:
+```toml
+[mcp_servers.brightbean]
+url = "{APP_URL}/api/v1/mcp"
+```
+
+**Claude Desktop and other native OAuth connectors.** Add a custom connector
+pointing to `{APP_URL}/api/v1/mcp`. The client registers dynamically and opens
+a browser for BrightBean login and consent; no API key is required. The
+connection acts with the signed-in user's current permissions across their
+authorized workspaces. A public HTTPS deployment is required.
+
+**Claude Code, Cursor, and custom API-key clients.** Point the client at the
+same URL and send a BrightBean API key as a Bearer token. For Claude Code:
 
 ```bash
 claude mcp add --transport http brightbean {APP_URL}/api/v1/mcp \
   --header "Authorization: Bearer bb_studio_..."
 ```
+
+Organization owners and administrators can inspect endpoint status, recent
+redacted activity, and tool policy at `/settings/mcp/`.
 
 ### Pre-built agent skill
 
