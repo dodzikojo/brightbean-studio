@@ -34,11 +34,13 @@ EXPECTED_LEGACY_TOOL_NAMES = {
     "finalize_media_upload",
     "get_account_analytics",
     "get_account_health",
+    "get_best_times",
     "get_calendar",
     "get_media",
     "get_post",
     "get_post_analytics",
     "get_workspace_context",
+    "get_workspace_analytics",
     "list_accounts",
     "list_ideas",
     "list_post_comments",
@@ -281,6 +283,24 @@ def _representative_success_payloads() -> dict[str, dict]:
             "posts": [],
             "events": [],
         },
+        "get_workspace_analytics": {
+            "workspace_id": post["workspace_id"],
+            "days": 30,
+            "account_count": 1,
+            "analytics_available_count": 0,
+            "captured_at": None,
+            "accounts": [account_analytics],
+        },
+        "get_best_times": {
+            "workspace_id": post["workspace_id"],
+            "account_id": account["id"],
+            "days": 30,
+            "timezone": "Europe/London",
+            "status": "insufficient_data",
+            "minimum_sample_size": 3,
+            "analyzed_posts": 1,
+            "recommendations": [],
+        },
         "list_queues": {
             "queues": [
                 {
@@ -341,7 +361,7 @@ def _representative_success_payloads() -> dict[str, dict]:
         "list_posts": {"posts": [post], "limit": 50, "next_cursor": None},
         "cancel_post": post,
         "schedule_draft": post,
-        "search_media": {"items": [media]},
+        "search_media": {"items": [media], "limit": 20, "next_cursor": None},
         "get_media": media,
         "upload_media": media,
         "request_media_upload": {

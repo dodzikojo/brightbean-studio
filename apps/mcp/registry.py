@@ -113,11 +113,13 @@ _READ_TOOLS = frozenset(
     {
         "get_account_analytics",
         "get_account_health",
+        "get_best_times",
         "get_calendar",
         "get_media",
         "get_post",
         "get_post_analytics",
         "get_workspace_context",
+        "get_workspace_analytics",
         "list_accounts",
         "list_ideas",
         "list_post_comments",
@@ -230,6 +232,8 @@ class _ListPostsOutput(_StrictOutput):
 
 class _SearchMediaOutput(_StrictOutput):
     items: list[MediaAssetResponse]
+    limit: int
+    next_cursor: str | None
 
 
 class _RequestMediaUploadOutput(_StrictOutput):
@@ -387,6 +391,35 @@ class _QueueTransitionOutput(_ScheduledTransitionOutput):
     queue_id: UUID
 
 
+class _WorkspaceAnalyticsOutput(_StrictOutput):
+    workspace_id: UUID
+    days: int
+    account_count: int
+    analytics_available_count: int
+    captured_at: datetime | None
+    accounts: list[AccountAnalyticsResponse]
+
+
+class _BestTimeRecommendation(_StrictOutput):
+    day_of_week: int
+    day_name: str
+    hour: int
+    local_time: str
+    score: float
+    sample_size: int
+
+
+class _BestTimesOutput(_StrictOutput):
+    workspace_id: UUID
+    account_id: UUID | None
+    days: int
+    timezone: str
+    status: str
+    minimum_sample_size: int
+    analyzed_posts: int
+    recommendations: list[_BestTimeRecommendation]
+
+
 def _typed_output_schema(model: type[BaseModel]) -> dict[str, Any]:
     """Advertise one exact success shape plus BrightBean's common error shape."""
     success_schema = model.model_json_schema(mode="serialization")
@@ -418,6 +451,8 @@ _OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "enqueue_post": _typed_output_schema(_QueueTransitionOutput),
     "reschedule_post": _typed_output_schema(_ScheduledTransitionOutput),
     "publish_post": _typed_output_schema(_ScheduledTransitionOutput),
+    "get_workspace_analytics": _typed_output_schema(_WorkspaceAnalyticsOutput),
+    "get_best_times": _typed_output_schema(_BestTimesOutput),
     "list_accounts": _typed_output_schema(_ListAccountsOutput),
     "list_posts": _typed_output_schema(_ListPostsOutput),
     "search_media": _typed_output_schema(_SearchMediaOutput),
@@ -465,7 +500,7 @@ def _with_builtin_metadata(tool: Tool) -> Tool:
         workspace_scoped=workspace_scoped,
     )
     if tool.name in _READ_TOOLS:
-        permission = "view_analytics" if tool.name.endswith("analytics") else None
+        permission = "view_analytics" if tool.name.endswith("analytics") or tool.name == "get_best_times" else None
         return replace(
             tool,
             annotations=ToolAnnotations(

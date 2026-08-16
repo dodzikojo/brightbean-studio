@@ -704,8 +704,19 @@ def _search_media(args: dict, context: dict[str, Any]) -> dict:
     if query:
         qs = MediaAsset.objects.search(query, queryset=qs)
 
-    qs = qs.order_by("-created_at", "id")[:limit]
-    return _wrap_text({"items": [_serialize_media(a) for a in qs]})
+    try:
+        offset = decode_page_cursor(args.get("cursor"))
+    except ValueError as exc:
+        raise JsonRpcError(INVALID_PARAMS, "cursor is invalid") from exc
+    page = list(qs.order_by("-created_at", "id")[offset : offset + limit + 1])
+    has_more = len(page) > limit
+    return _wrap_text(
+        {
+            "items": [_serialize_media(a) for a in page[:limit]],
+            "limit": limit,
+            "next_cursor": encode_page_cursor(offset + limit) if has_more else None,
+        }
+    )
 
 
 register_tool(
@@ -740,6 +751,7 @@ register_tool(
                     "maximum": _MCP_MEDIA_LIMIT_MAX,
                     "default": _MCP_MEDIA_LIMIT_DEFAULT,
                 },
+                "cursor": {"type": "string", "description": "Opaque cursor returned by the previous page."},
             },
             "additionalProperties": False,
         },
