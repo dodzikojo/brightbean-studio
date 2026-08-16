@@ -887,13 +887,18 @@ class TestSdkOAuthBridge:
             redirect_uris="https://client.example/callback",
         )
         raw_token = f"sdk-oauth-{user.pk}"
-        get_access_token_model().objects.create(
+        from apps.oauth_server.resources import canonical_mcp_resource_uri
+        from apps.oauth_server.services import bind_access_token
+
+        access_token = get_access_token_model().objects.create(
             user=user,
             application=application,
             token=raw_token,
             scope="mcp",
+            resource=[canonical_mcp_resource_uri()],
             expires=timezone.now() + timedelta(hours=1),
         )
+        bind_access_token(access_token, raw_token)
         with _test_client(_sdk_app(), base_url="https://testserver") as client:
             response = client.post(MCP_PATH, headers=_auth_headers(raw_token), json=_initialize())
 
@@ -915,13 +920,18 @@ class TestSdkOAuthBridge:
             redirect_uris="https://client.example/callback",
         )
         raw_token = f"sdk-oauth-tool-{user.pk}"
-        get_access_token_model().objects.create(
+        from apps.oauth_server.resources import canonical_mcp_resource_uri
+        from apps.oauth_server.services import bind_access_token
+
+        access_token = get_access_token_model().objects.create(
             user=user,
             application=application,
             token=raw_token,
             scope="mcp",
+            resource=[canonical_mcp_resource_uri()],
             expires=timezone.now() + timedelta(hours=1),
         )
+        bind_access_token(access_token, raw_token)
         from apps.api.auth import _resolve_oauth_actor
 
         principal = _resolve_oauth_actor(raw_token)

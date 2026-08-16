@@ -45,7 +45,7 @@ mcp>=2.0,<3.0
 # Desktop (and other native MCP connectors) authenticate via the OAuth
 # DCR + authorization-code + PKCE flow instead of a pre-shared bb_studio_
 # key. Existing API keys keep working unchanged. See apps/oauth_server/.
-django-oauth-toolkit>=3.0,<4.0
+django-oauth-toolkit>=3.4,<4.0
 
 
 # Dev/Test

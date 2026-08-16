@@ -72,7 +72,10 @@ def _ping(params: dict, context: dict[str, Any]) -> dict:
 
 
 def _tools_list(params: dict, context: dict[str, Any]) -> dict:
-    return {"tools": [t.to_mcp_dict() for t in all_tools()]}
+    from apps.oauth_server.scopes import scope_allows
+
+    scopes = context["principal"].granted_scopes
+    return {"tools": [tool.to_mcp_dict() for tool in all_tools() if scope_allows(scopes, tool.required_scope)]}
 
 
 def _tools_call(params: dict, context: dict[str, Any]) -> dict:
@@ -84,6 +87,10 @@ def _tools_call(params: dict, context: dict[str, Any]) -> dict:
         raise JsonRpcError(INVALID_PARAMS, f"tools/call: unknown tool '{name}'")
     if not tool.enabled:
         return domain_error_result(tool_disabled_error(name))
+    from apps.oauth_server.scopes import scope_allows
+
+    if not scope_allows(context["principal"].granted_scopes, tool.required_scope):
+        return domain_error_result(DomainError("forbidden", "This credential cannot use that tool."))
     arguments = params.get("arguments") or {}
     if not isinstance(arguments, dict):
         raise JsonRpcError(INVALID_PARAMS, "tools/call: 'arguments' must be an object")

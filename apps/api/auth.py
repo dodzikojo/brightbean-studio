@@ -202,8 +202,6 @@ def _client_ip(request: HttpRequest) -> str | None:
 # expose an ApiKey-shaped shim — the MCP handlers, throttle, and audit log all
 # read an ``ApiKey``-like object off the request and run unchanged.
 
-_MCP_OAUTH_SCOPE = "mcp"
-
 
 def _resolve_oauth_actor(token: str):
     """Resolve a non-bb_studio_ bearer as a django-oauth-toolkit access token.
@@ -240,14 +238,21 @@ def _resolve_oauth_actor(token: str):
         # INFO: token expiry is a normal, recurring condition (clients refresh hourly).
         LOG.info("Bearer auth rejected: OAuth access token for user %s has expired.", tok.user_id)
         return None
-    if not tok.allow_scopes([_MCP_OAUTH_SCOPE]):
+    from apps.oauth_server.scopes import has_mcp_scope, normalize_scopes
+    from apps.oauth_server.services import verify_access_binding
+
+    granted_scopes = normalize_scopes(tok.scope or "")
+    if not has_mcp_scope(granted_scopes):
         # INFO: a wrong-scope token is a client-side issue, not a server alarm.
         LOG.info(
             "Bearer auth rejected: OAuth token for user %s is missing the %r scope (granted: %r).",
             tok.user_id,
-            _MCP_OAUTH_SCOPE,
+            "an MCP capability",
             tok.scope,
         )
+        return None
+    if verify_access_binding(token, tok) is None:
+        LOG.info("Bearer auth rejected: OAuth token for user %s has no valid MCP resource binding.", tok.user_id)
         return None
     from apps.mcp.principal import principal_from_oauth_token
 

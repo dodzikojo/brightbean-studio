@@ -101,13 +101,18 @@ def _mint_oauth_token(user, *, scope: str = "mcp", expired: bool = False) -> str
     )
     raw = f"oauthtok-{'expired' if expired else 'valid'}-{user.pk}"
     delta = timedelta(hours=-1) if expired else timedelta(hours=1)
-    access_token_model.objects.create(
+    from apps.oauth_server.resources import canonical_mcp_resource_uri
+    from apps.oauth_server.services import bind_access_token
+
+    access_token = access_token_model.objects.create(
         user=user,
         application=app,
         token=raw,
         scope=scope,
+        resource=[canonical_mcp_resource_uri()],
         expires=timezone.now() + delta,
     )
+    bind_access_token(access_token, raw)
     return raw
 
 

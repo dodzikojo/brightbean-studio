@@ -495,7 +495,14 @@ MCP_TRANSPORT_BACKEND = env("MCP_TRANSPORT_BACKEND", default="legacy")
 MCP_STAGING_ALIAS = env("MCP_STAGING_ALIAS", default="").rstrip("/")
 
 OAUTH2_PROVIDER = {
-    "SCOPES": {"mcp": "Call BrightBean Studio MCP tools on your behalf"},
+    "SCOPES": {
+        "mcp.read": "Read authorized BrightBean workspaces and content",
+        "mcp.content": "Create and edit BrightBean content and media",
+        "mcp.publish": "Schedule, approve, and publish BrightBean content",
+        "mcp.inbox.reply": "Send replies from the BrightBean inbox",
+        "mcp.admin": "Manage BrightBean MCP settings and activity",
+        "mcp": "Compatibility access to all MCP capabilities",
+    },
     "DEFAULT_SCOPES": ["mcp"],
     "PKCE_REQUIRED": True,
     # Restrict ``code_challenge_method`` to ``S256``. django-oauth-toolkit
@@ -508,7 +515,8 @@ OAUTH2_PROVIDER = {
     "REFRESH_TOKEN_EXPIRE_SECONDS": 30 * 24 * 60 * 60,
     "AUTHORIZATION_CODE_EXPIRE_SECONDS": 600,
     "ROTATE_REFRESH_TOKEN": True,
-    "REQUEST_APPROVAL_PROMPT": "auto",
+    "REQUEST_APPROVAL_PROMPT": "force",
+    "REFRESH_TOKEN_REUSE_PROTECTION": True,
     # Claude's OAuth callback is always https; reject non-TLS redirect URIs.
     "ALLOWED_REDIRECT_URI_SCHEMES": ["https"],
 }

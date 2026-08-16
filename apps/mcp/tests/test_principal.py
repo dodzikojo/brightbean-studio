@@ -29,6 +29,8 @@ def _workspace(name: str, *, archived: bool = False):
 def _oauth_token(user, *, scope: str = "mcp mcp.read"):
     from oauth2_provider.models import get_access_token_model, get_application_model
 
+    from apps.oauth_server.resources import canonical_mcp_resource_uri
+
     app_model = get_application_model()
     app = app_model.objects.create(
         name="MCP test",
@@ -41,6 +43,7 @@ def _oauth_token(user, *, scope: str = "mcp mcp.read"):
         application=app,
         token=f"secret-{user.pk}",
         scope=scope,
+        resource=[canonical_mcp_resource_uri()],
         expires=timezone.now() + timedelta(hours=1),
     )
 

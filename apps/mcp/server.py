@@ -266,7 +266,8 @@ def _authenticated_context(ctx: ServerRequestContext) -> BrightBeanAccessToken:
 
 
 def _list_tools_sync(access_token: BrightBeanAccessToken) -> list[types.Tool]:
-    del access_token
+    from apps.oauth_server.scopes import scope_allows
+
     return [
         types.Tool(
             name=tool.name,
@@ -282,6 +283,7 @@ def _list_tools_sync(access_token: BrightBeanAccessToken) -> list[types.Tool]:
             ),
         )
         for tool in all_tools()
+        if scope_allows(access_token.principal.granted_scopes, tool.required_scope)
     ]
 
 
@@ -292,6 +294,10 @@ def _call_tool_sync(access_token: BrightBeanAccessToken, name: str, arguments: d
         raise MCPError(code=INVALID_PARAMS, message=f"tools/call: unknown tool '{name}'")
     if not tool.enabled:
         return domain_error_result(tool_disabled_error(name))
+    from apps.oauth_server.scopes import scope_allows
+
+    if not scope_allows(access_token.principal.granted_scopes, tool.required_scope):
+        return domain_error_result(DomainError("forbidden", "This credential cannot use that tool."))
 
     try:
         _validate_tool_arguments(tool.input_schema, arguments)
