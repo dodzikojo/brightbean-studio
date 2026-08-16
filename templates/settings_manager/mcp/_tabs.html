@@ -1,0 +1,5 @@
+<div class="flex items-center gap-1 p-1 mb-8 overflow-x-auto" style="background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-lg); width: fit-content; max-width: 100%;">
+    <a href="{% url 'settings_manager:mcp_overview' %}" class="px-4 py-2 text-sm font-medium whitespace-nowrap rounded-md {% if mcp_section == 'overview' %}text-orange-700 bg-white shadow-sm{% endif %}" {% if mcp_section != 'overview' %}style="color: var(--text-secondary);"{% endif %}>Overview</a>
+    <a href="{% url 'settings_manager:mcp_activity' %}" class="px-4 py-2 text-sm font-medium whitespace-nowrap rounded-md {% if mcp_section == 'activity' %}text-orange-700 bg-white shadow-sm{% endif %}" {% if mcp_section != 'activity' %}style="color: var(--text-secondary);"{% endif %}>Activity</a>
+    <a href="{% url 'settings_manager:mcp_tools' %}" class="px-4 py-2 text-sm font-medium whitespace-nowrap rounded-md {% if mcp_section == 'tools' %}text-orange-700 bg-white shadow-sm{% endif %}" {% if mcp_section != 'tools' %}style="color: var(--text-secondary);"{% endif %}>Tools</a>
+</div>

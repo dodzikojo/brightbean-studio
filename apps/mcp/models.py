@@ -150,6 +150,13 @@ class McpActivityEvent(models.Model):
             models.Index(fields=["primitive", "name"], name="mcp_activity_primitive"),
         ]
 
+    @property
+    def safe_target_path(self) -> str:
+        path = self.target_path
+        if not path.startswith("/") or path.startswith("//") or "?" in path or "#" in path:
+            return ""
+        return path
+
 
 class McpConfirmationGrant(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
