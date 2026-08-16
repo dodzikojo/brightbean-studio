@@ -116,12 +116,14 @@ _READ_TOOLS = frozenset(
         "get_best_times",
         "get_calendar",
         "get_media",
+        "get_inbox_message",
         "get_post",
         "get_post_analytics",
         "get_workspace_context",
         "get_workspace_analytics",
         "list_accounts",
         "list_ideas",
+        "list_inbox",
         "list_post_comments",
         "list_posts",
         "list_queues",
@@ -129,6 +131,10 @@ _READ_TOOLS = frozenset(
         "search_media",
     }
 )
+_READ_PERMISSIONS = {
+    "get_inbox_message": ("use_inbox",),
+    "list_inbox": ("use_inbox",),
+}
 _PUBLISH_TOOLS = frozenset(
     {
         "approve_post",
@@ -167,6 +173,9 @@ _CONTENT_TOOLS = frozenset(
         "update_draft",
         "update_idea",
         "upload_media",
+        "add_inbox_note",
+        "assign_inbox_message",
+        "set_inbox_status",
     }
 )
 _CONTENT_PERMISSIONS = {
@@ -180,7 +189,11 @@ _CONTENT_PERMISSIONS = {
     "update_draft": ("create_posts",),
     "update_idea": ("create_posts",),
     "upload_media": ("upload_media",),
+    "add_inbox_note": ("reply_from_inbox",),
+    "assign_inbox_message": ("reply_from_inbox",),
+    "set_inbox_status": ("reply_from_inbox",),
 }
+_INBOX_REPLY_TOOLS = frozenset({"send_inbox_reply"})
 _GLOBAL_TOOLS = frozenset({"list_workspaces"})
 
 _CONFIRMATION_PREVIEW_SCHEMA: dict[str, Any] = {
@@ -420,6 +433,58 @@ class _BestTimesOutput(_StrictOutput):
     recommendations: list[_BestTimeRecommendation]
 
 
+class _InboxMessageSummary(_StrictOutput):
+    id: UUID
+    workspace_id: UUID
+    social_account_id: UUID
+    platform: str
+    message_type: str
+    sender_name: str
+    sender_handle: str
+    body: str
+    sentiment: str
+    status: str
+    assigned_to_id: UUID | None
+    received_at: datetime
+
+
+class _InboxThreadItem(_StrictOutput):
+    id: UUID
+    author_id: UUID | None
+    body: str
+
+
+class _InboxReplyItem(_InboxThreadItem):
+    sent_at: datetime
+
+
+class _InboxNoteItem(_InboxThreadItem):
+    created_at: datetime
+
+
+class _InboxMessageDetail(_InboxMessageSummary):
+    replies: list[_InboxReplyItem]
+    notes: list[_InboxNoteItem]
+
+
+class _ListInboxOutput(_StrictOutput):
+    messages: list[_InboxMessageSummary]
+    limit: int
+    next_cursor: str | None
+
+
+class _InboxNoteOutput(_InboxThreadItem):
+    message_id: UUID
+    created_at: datetime
+
+
+class _InboxReplyOutput(_StrictOutput):
+    id: UUID
+    message_id: UUID
+    status: str
+    sent_at: datetime
+
+
 def _typed_output_schema(model: type[BaseModel]) -> dict[str, Any]:
     """Advertise one exact success shape plus BrightBean's common error shape."""
     success_schema = model.model_json_schema(mode="serialization")
@@ -453,6 +518,12 @@ _OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "publish_post": _typed_output_schema(_ScheduledTransitionOutput),
     "get_workspace_analytics": _typed_output_schema(_WorkspaceAnalyticsOutput),
     "get_best_times": _typed_output_schema(_BestTimesOutput),
+    "list_inbox": _typed_output_schema(_ListInboxOutput),
+    "get_inbox_message": _typed_output_schema(_InboxMessageDetail),
+    "add_inbox_note": _typed_output_schema(_InboxNoteOutput),
+    "assign_inbox_message": _typed_output_schema(_InboxMessageSummary),
+    "set_inbox_status": _typed_output_schema(_InboxMessageSummary),
+    "send_inbox_reply": _typed_output_schema(_InboxReplyOutput),
     "list_accounts": _typed_output_schema(_ListAccountsOutput),
     "list_posts": _typed_output_schema(_ListPostsOutput),
     "search_media": _typed_output_schema(_SearchMediaOutput),
@@ -501,6 +572,7 @@ def _with_builtin_metadata(tool: Tool) -> Tool:
     )
     if tool.name in _READ_TOOLS:
         permission = "view_analytics" if tool.name.endswith("analytics") or tool.name == "get_best_times" else None
+        permissions = _READ_PERMISSIONS.get(tool.name, (permission,) if permission else ())
         return replace(
             tool,
             annotations=ToolAnnotations(
@@ -509,7 +581,38 @@ def _with_builtin_metadata(tool: Tool) -> Tool:
                 idempotent=True,
             ),
             required_scope="mcp.read",
-            required_permission=permission,
+            required_permissions=permissions,
+        )
+    if tool.name in _INBOX_REPLY_TOOLS:
+        confirmation_properties = dict(tool.input_schema.get("properties", {}))
+        confirmation_properties.update(
+            {
+                "confirmation_token": {
+                    "type": "string",
+                    "description": "One-use token returned by the matching preview call.",
+                },
+                "idempotency_key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "Caller-generated replay key required with confirmation_token.",
+                },
+            }
+        )
+        output_schema = dict(tool.output_schema)
+        variants = list(output_schema.get("oneOf", []))
+        if variants:
+            variants = [variants[0], _CONFIRMATION_PREVIEW_SCHEMA, _CONFIRMED_ACTION_SCHEMA, *variants[1:]]
+            output_schema["oneOf"] = variants
+        return replace(
+            tool,
+            input_schema={**tool.input_schema, "properties": confirmation_properties},
+            output_schema=output_schema,
+            annotations=ToolAnnotations(title="Send Inbox Reply", open_world=True),
+            risk_level="high",
+            required_scope="mcp.inbox.reply",
+            required_permissions=("reply_from_inbox",),
+            confirmation_required=True,
         )
     if tool.name in _PUBLISH_TOOLS:
         confirmation_properties = dict(tool.input_schema.get("properties", {}))

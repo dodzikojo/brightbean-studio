@@ -24,9 +24,11 @@ from apps.mcp.results import (
 )
 
 EXPECTED_LEGACY_TOOL_NAMES = {
+    "add_inbox_note",
     "cancel_post",
     "add_post_comment",
     "approve_post",
+    "assign_inbox_message",
     "clone_post",
     "convert_idea_to_draft",
     "create_draft",
@@ -36,6 +38,7 @@ EXPECTED_LEGACY_TOOL_NAMES = {
     "get_account_health",
     "get_best_times",
     "get_calendar",
+    "get_inbox_message",
     "get_media",
     "get_post",
     "get_post_analytics",
@@ -43,6 +46,7 @@ EXPECTED_LEGACY_TOOL_NAMES = {
     "get_workspace_analytics",
     "list_accounts",
     "list_ideas",
+    "list_inbox",
     "list_post_comments",
     "list_posts",
     "list_queues",
@@ -57,6 +61,8 @@ EXPECTED_LEGACY_TOOL_NAMES = {
     "schedule_post",
     "search_media",
     "submit_for_review",
+    "send_inbox_reply",
+    "set_inbox_status",
     "update_draft",
     "update_idea",
     "upload_media",
@@ -263,6 +269,27 @@ def _representative_success_payloads() -> dict[str, dict]:
         "created_at": "2026-08-16T09:00:00+00:00",
         "updated_at": "2026-08-16T09:00:00+00:00",
     }
+    inbox_message = {
+        "id": "61000000-0000-0000-0000-000000000001",
+        "workspace_id": post["workspace_id"],
+        "social_account_id": account["id"],
+        "platform": "linkedin",
+        "message_type": "comment",
+        "sender_name": "Customer",
+        "sender_handle": "customer",
+        "body": "Can you help?",
+        "sentiment": "neutral",
+        "status": "open",
+        "assigned_to_id": None,
+        "received_at": "2026-08-16T09:00:00+00:00",
+    }
+    inbox_note = {
+        "id": "61000000-0000-0000-0000-000000000002",
+        "message_id": inbox_message["id"],
+        "author_id": "61000000-0000-0000-0000-000000000003",
+        "body": "Escalate",
+        "created_at": "2026-08-16T09:01:00+00:00",
+    }
     transition = {"id": post["id"], "post_id": post["id"], "status": "pending_review"}
     calendar_action = {
         "id": "70000000-0000-0000-0000-000000000001",
@@ -271,6 +298,17 @@ def _representative_success_payloads() -> dict[str, dict]:
         "scheduled_at": "2026-08-17T09:00:00+00:00",
     }
     return {
+        "list_inbox": {"messages": [inbox_message], "limit": 50, "next_cursor": None},
+        "get_inbox_message": {**inbox_message, "replies": [], "notes": []},
+        "add_inbox_note": inbox_note,
+        "assign_inbox_message": inbox_message,
+        "set_inbox_status": {**inbox_message, "status": "resolved"},
+        "send_inbox_reply": {
+            "id": "61000000-0000-0000-0000-000000000004",
+            "message_id": inbox_message["id"],
+            "status": "resolved",
+            "sent_at": "2026-08-16T09:02:00+00:00",
+        },
         "add_post_comment": comment,
         "list_post_comments": {"comments": [comment], "limit": 50, "next_cursor": None},
         "submit_for_review": transition,

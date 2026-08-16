@@ -13,7 +13,7 @@ import pytest
 from django.utils import timezone
 
 from apps.inbox.models import InboxMessage, InboxReply
-from apps.inbox.views import _send_platform_reply
+from apps.inbox.services import _send_platform_reply
 from apps.social_accounts.models import SocialAccount
 
 
@@ -62,7 +62,7 @@ def test_comment_goes_to_the_comment_edge(fb_account):
     message = _message(fb_account, message_type=InboxMessage.MessageType.COMMENT)
     provider = _provider()
 
-    with patch("apps.inbox.views.get_provider", return_value=provider):
+    with patch("apps.inbox.services.get_provider", return_value=provider):
         assert _send_platform_reply(message, "Thanks!") == "c-1"
 
     provider.reply_to_comment.assert_called_once()
@@ -74,7 +74,7 @@ def test_mention_is_treated_as_a_comment(fb_account):
     message = _message(fb_account, message_type=InboxMessage.MessageType.MENTION)
     provider = _provider()
 
-    with patch("apps.inbox.views.get_provider", return_value=provider):
+    with patch("apps.inbox.services.get_provider", return_value=provider):
         _send_platform_reply(message, "Thanks for the shout-out")
 
     provider.reply_to_comment.assert_called_once()
@@ -170,7 +170,7 @@ def test_recent_dm_replies_without_the_human_agent_tag(fb_account):
     message = _message(fb_account, message_type=InboxMessage.MessageType.DM, hours_ago=2)
     provider = _provider()
 
-    with patch("apps.inbox.views.get_provider", return_value=provider):
+    with patch("apps.inbox.services.get_provider", return_value=provider):
         _send_platform_reply(message, "On it")
 
     assert provider.reply_to_message.call_args.kwargs["human_agent"] is False
@@ -180,7 +180,7 @@ def test_dm_older_than_24_hours_is_tagged_human_agent(fb_account):
     message = _message(fb_account, message_type=InboxMessage.MessageType.DM, hours_ago=30)
     provider = _provider()
 
-    with patch("apps.inbox.views.get_provider", return_value=provider):
+    with patch("apps.inbox.services.get_provider", return_value=provider):
         _send_platform_reply(message, "Sorry for the delay")
 
     assert provider.reply_to_message.call_args.kwargs["human_agent"] is True
@@ -190,7 +190,7 @@ def test_sender_handle_is_passed_as_the_recipient(fb_account):
     message = _message(fb_account, message_type=InboxMessage.MessageType.DM, sender_handle="psid-99")
     provider = _provider()
 
-    with patch("apps.inbox.views.get_provider", return_value=provider):
+    with patch("apps.inbox.services.get_provider", return_value=provider):
         _send_platform_reply(message, "Hi")
 
     assert provider.reply_to_message.call_args.kwargs["extra"]["recipient_id"] == "psid-99"
@@ -205,7 +205,7 @@ def test_existing_extra_recipient_is_not_overwritten(fb_account):
     )
     provider = _provider()
 
-    with patch("apps.inbox.views.get_provider", return_value=provider):
+    with patch("apps.inbox.services.get_provider", return_value=provider):
         _send_platform_reply(message, "Hi")
 
     assert provider.reply_to_message.call_args.kwargs["extra"]["recipient_id"] == "from-payload"

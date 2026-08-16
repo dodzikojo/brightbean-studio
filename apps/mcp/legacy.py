@@ -57,6 +57,8 @@ def _initialize(params: dict, context: dict[str, Any]) -> dict:
         "capabilities": {
             # Static tool catalog; we don't send listChanged notifications.
             "tools": {"listChanged": False},
+            "resources": {"subscribe": False, "listChanged": False},
+            "prompts": {"listChanged": False},
         },
         "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
     }
@@ -132,6 +134,56 @@ def _tools_call(params: dict, context: dict[str, Any]) -> dict:
         return domain_error_result(exc)
 
 
+def _primitive_error(exc: DomainError) -> JsonRpcError:
+    return JsonRpcError(INVALID_PARAMS, exc.message, data=exc.as_structured_content())
+
+
+def _resources_list(params: dict, context: dict[str, Any]) -> dict:
+    del params
+    from apps.mcp.resources import list_resources
+
+    return {"resources": list_resources(context["principal"], context["request"])}
+
+
+def _resource_templates_list(params: dict, context: dict[str, Any]) -> dict:
+    del params, context
+    from apps.mcp.resources import list_resource_templates
+
+    return {"resourceTemplates": list_resource_templates()}
+
+
+def _resources_read(params: dict, context: dict[str, Any]) -> dict:
+    uri = params.get("uri")
+    if not isinstance(uri, str):
+        raise JsonRpcError(INVALID_PARAMS, "resources/read: 'uri' is required")
+    from apps.mcp.resources import read_resource
+
+    try:
+        return read_resource(context["principal"], context["request"], uri)
+    except DomainError as exc:
+        raise _primitive_error(exc) from exc
+
+
+def _prompts_list(params: dict, context: dict[str, Any]) -> dict:
+    del params, context
+    from apps.mcp.prompts import list_prompts
+
+    return {"prompts": list_prompts()}
+
+
+def _prompts_get(params: dict, context: dict[str, Any]) -> dict:
+    name = params.get("name")
+    arguments = params.get("arguments") or {}
+    if not isinstance(name, str) or not isinstance(arguments, dict):
+        raise JsonRpcError(INVALID_PARAMS, "prompts/get requires a name and object arguments")
+    from apps.mcp.prompts import get_prompt
+
+    try:
+        return get_prompt(context["principal"], context["request"], name, arguments)
+    except DomainError as exc:
+        raise _primitive_error(exc) from exc
+
+
 class _ToolValidationError(ValueError):
     """Raised when a tool's arguments don't conform to its inputSchema."""
 
@@ -163,6 +215,11 @@ METHODS = {
     "ping": _ping,
     "tools/list": _tools_list,
     "tools/call": _tools_call,
+    "resources/list": _resources_list,
+    "resources/templates/list": _resource_templates_list,
+    "resources/read": _resources_read,
+    "prompts/list": _prompts_list,
+    "prompts/get": _prompts_get,
 }
 
 

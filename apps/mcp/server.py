@@ -378,6 +378,106 @@ async def _call_tool(
     )
 
 
+def _list_resources_sync(access_token: BrightBeanAccessToken) -> list[dict[str, Any]]:
+    from apps.mcp.resources import list_resources
+
+    return list_resources(access_token.principal, access_token.django_request)
+
+
+async def _list_resources(
+    ctx: ServerRequestContext,
+    params: types.PaginatedRequestParams | None,
+) -> types.ListResourcesResult:
+    del params
+    access_token = _authenticated_context(ctx)
+    resources = await sync_to_async(_list_resources_sync, thread_sensitive=True)(access_token)
+    return types.ListResourcesResult(resources=[types.Resource(**resource) for resource in resources])
+
+
+async def _list_resource_templates(
+    ctx: ServerRequestContext,
+    params: types.PaginatedRequestParams | None,
+) -> types.ListResourceTemplatesResult:
+    del params
+    _authenticated_context(ctx)
+    from apps.mcp.resources import list_resource_templates
+
+    return types.ListResourceTemplatesResult(
+        resource_templates=[types.ResourceTemplate(**template) for template in list_resource_templates()]
+    )
+
+
+def _read_resource_sync(access_token: BrightBeanAccessToken, uri: str) -> dict[str, Any]:
+    from apps.mcp.resources import read_resource
+
+    try:
+        return read_resource(access_token.principal, access_token.django_request, uri)
+    except DomainError as exc:
+        raise MCPError(code=INVALID_PARAMS, message=exc.message, data=exc.as_structured_content()) from exc
+
+
+async def _read_resource(
+    ctx: ServerRequestContext,
+    params: types.ReadResourceRequestParams,
+) -> types.ReadResourceResult:
+    access_token = _authenticated_context(ctx)
+    result = await sync_to_async(_read_resource_sync, thread_sensitive=True)(access_token, str(params.uri))
+    return types.ReadResourceResult(
+        contents=[types.TextResourceContents(**content) for content in result["contents"]]
+    )
+
+
+async def _list_prompts(
+    ctx: ServerRequestContext,
+    params: types.PaginatedRequestParams | None,
+) -> types.ListPromptsResult:
+    del params
+    _authenticated_context(ctx)
+    from apps.mcp.prompts import list_prompts
+
+    return types.ListPromptsResult(prompts=[types.Prompt(**prompt) for prompt in list_prompts()])
+
+
+def _get_prompt_sync(
+    access_token: BrightBeanAccessToken,
+    name: str,
+    arguments: dict[str, str],
+) -> dict[str, Any]:
+    from apps.mcp.prompts import get_prompt
+
+    try:
+        return get_prompt(
+            access_token.principal,
+            access_token.django_request,
+            name,
+            arguments,
+        )
+    except DomainError as exc:
+        raise MCPError(code=INVALID_PARAMS, message=exc.message, data=exc.as_structured_content()) from exc
+
+
+async def _get_prompt(
+    ctx: ServerRequestContext,
+    params: types.GetPromptRequestParams,
+) -> types.GetPromptResult:
+    access_token = _authenticated_context(ctx)
+    result = await sync_to_async(_get_prompt_sync, thread_sensitive=True)(
+        access_token,
+        params.name,
+        params.arguments or {},
+    )
+    messages: list[types.PromptMessage] = []
+    for message in result["messages"]:
+        content = message["content"]
+        typed_content: types.ResourceLink | types.TextContent
+        if content["type"] == "resource_link":
+            typed_content = types.ResourceLink(**content)
+        else:
+            typed_content = types.TextContent(**content)
+        messages.append(types.PromptMessage(role=message["role"], content=typed_content))
+    return types.GetPromptResult(description=result.get("description"), messages=messages)
+
+
 def build_sdk_server(
     *,
     public_base_url: str,
@@ -391,6 +491,11 @@ def build_sdk_server(
         version=SERVER_VERSION,
         on_list_tools=_list_tools,
         on_call_tool=_call_tool,
+        on_list_resources=_list_resources,
+        on_list_resource_templates=_list_resource_templates,
+        on_read_resource=_read_resource,
+        on_list_prompts=_list_prompts,
+        on_get_prompt=_get_prompt,
     )
     transport_security = _transport_security(public_base_url)
     sdk_application = server.streamable_http_app(
