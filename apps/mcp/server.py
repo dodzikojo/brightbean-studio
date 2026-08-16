@@ -29,6 +29,7 @@ from apps.api.limits import enforce_http_rate_limits
 from apps.api.middleware import log_audit_entry
 from apps.mcp.errors import DomainError, domain_error_result, tool_disabled_error
 from apps.mcp.protocol import INVALID_PARAMS, SERVER_NAME, SERVER_VERSION, JsonRpcError
+from apps.mcp.rate_limits import request_is_write as _request_is_write
 from apps.mcp.registry import all_tools, get_tool
 from apps.mcp.transport import _status_for_response, _ToolValidationError, _validate_tool_arguments
 
@@ -111,7 +112,7 @@ class RequestBoundaryMiddleware:
                     try:
                         await sync_to_async(enforce_http_rate_limits, thread_sensitive=True)(
                             access_token.django_request,
-                            is_write=True,
+                            is_write=_request_is_write(body),
                             include_workspace=False,
                         )
                     except HttpError as exc:

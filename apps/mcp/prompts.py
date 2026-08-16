@@ -33,7 +33,7 @@ _PROMPTS: dict[str, dict[str, Any]] = {
         "description": "Triage the authorized social inbox without sending replies.",
         "arguments": ["workspace_id"],
         "tool": "list_inbox",
-        "resource": "inbox/{message_id}",
+        "resource": "inbox",
         "instruction": "Triage inbox items by urgency, sentiment, ownership, and response risk. Do not send replies.",
     },
 }
@@ -70,7 +70,6 @@ def get_prompt(principal, request, name: str, arguments: dict[str, str]) -> dict
         "objective": arguments.get("objective") or "the stated business goal",
         "platform": arguments.get("platform") or "the most appropriate connected platforms",
         "days": arguments.get("days") or "7",
-        "message_id": "{message_id}",
     }
     try:
         instruction = definition["instruction"].format(**values)

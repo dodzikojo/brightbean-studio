@@ -212,6 +212,20 @@ def _post_asgi_chunks(application, *, token: str, chunks: list[bytes], content_l
 
 @pytest.mark.django_db(transaction=True)
 class TestSdkTransport:
+    def test_request_rate_bucket_uses_registered_tool_annotations(self):
+        from apps.mcp.server import _request_is_write
+
+        assert _request_is_write(json.dumps(_rpc("tools/list")).encode()) is False
+        assert (
+            _request_is_write(json.dumps(_rpc("tools/call", {"name": "list_accounts", "arguments": {}})).encode())
+            is False
+        )
+        assert (
+            _request_is_write(json.dumps(_rpc("tools/call", {"name": "create_draft", "arguments": {}})).encode())
+            is True
+        )
+        assert _request_is_write(b"not-json") is True
+
     def test_both_exact_paths_initialize_without_redirect(self, issued_key):
         with _test_client(_sdk_app(), base_url="https://testserver", follow_redirects=False) as client:
             for request_id, path in enumerate((MCP_PATH, MCP_PATH_SLASH), start=1):
@@ -349,7 +363,8 @@ class TestSdkTransport:
         assert {account["id"] for account in payload["accounts"]} == {str(social_account.id)}
         assert enforce_rate_limits.call_count == 2
         assert all(
-            call.kwargs == {"is_write": True, "include_workspace": False} for call in enforce_rate_limits.call_args_list
+            call.kwargs == {"is_write": False, "include_workspace": False}
+            for call in enforce_rate_limits.call_args_list
         )
         assert ApiKeyAuditLog.objects.filter(
             api_key=issued_key.api_key,
@@ -381,8 +396,8 @@ class TestSdkTransport:
     def test_real_rate_limit_returns_structured_http_429_once(self, issued_key):
         from apps.api_keys.models import ApiKeyAuditLog
 
-        issued_key.api_key.rate_override_writes = 0
-        issued_key.api_key.save(update_fields=["rate_override_writes"])
+        issued_key.api_key.rate_override_reads = 0
+        issued_key.api_key.save(update_fields=["rate_override_reads"])
         with _test_client(_sdk_app(), base_url="https://testserver") as client:
             response = client.post(
                 MCP_PATH,
@@ -393,7 +408,7 @@ class TestSdkTransport:
         assert response.status_code == 429
         assert response.json() == {
             "error": "rate_limited",
-            "tier": "per_key_writes",
+            "tier": "per_key_reads",
             "limit": 0,
             "remaining": 0,
             "retry_after": 60,

@@ -34,6 +34,7 @@ from apps.mcp.protocol import (
     dispatch,
     make_error,
 )
+from apps.mcp.rate_limits import message_is_write
 from apps.mcp.tools import all_tools, get_tool
 
 router = Router(tags=["mcp"])
@@ -277,7 +278,7 @@ def mcp_endpoint(request: HttpRequest):
             # One rate-limit charge per JSON-RPC message — agents that
             # batch 100 calls into one HTTP request still consume 100
             # tokens, exactly as if they had sent 100 separate POSTs.
-            enforce_http_rate_limits(request, is_write=True, include_workspace=False)
+            enforce_http_rate_limits(request, is_write=message_is_write(msg), include_workspace=False)
             started_at = perf_counter()
             r = dispatch(msg, context, METHODS)
             # Codex fix: always audit, even notifications (r is None),
@@ -298,7 +299,7 @@ def mcp_endpoint(request: HttpRequest):
 
     # Single message.
     if isinstance(body, dict):
-        enforce_http_rate_limits(request, is_write=True, include_workspace=False)
+        enforce_http_rate_limits(request, is_write=message_is_write(body), include_workspace=False)
         started_at = perf_counter()
         response = dispatch(body, context, METHODS)
         audit_status = _status_for_response(response)

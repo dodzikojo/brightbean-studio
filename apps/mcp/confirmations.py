@@ -7,6 +7,7 @@ import json
 import secrets
 from collections.abc import Callable, Mapping, Sequence
 from datetime import timedelta
+from time import monotonic, sleep
 from typing import Any
 
 from django.db import IntegrityError, transaction
@@ -18,6 +19,9 @@ from apps.mcp.principal import McpPrincipal
 from apps.mcp.results import success_result
 
 CONFIRMATION_TTL = timedelta(minutes=10)
+IDEMPOTENCY_REPLAY_WAIT_SECONDS = 2.0
+IDEMPOTENCY_REPLAY_POLL_SECONDS = 0.05
+EXTERNAL_RESERVATION_STALE_AFTER = timedelta(minutes=15)
 _CONTROL_ARGUMENTS = frozenset({"confirmation_token", "idempotency_key"})
 _SAFE_EXACT_KEYS = frozenset(
     {
@@ -107,11 +111,36 @@ def _replay(record: McpIdempotencyRecord, *, payload_hash: str) -> dict[str, Any
         )
     if record.status == McpIdempotencyRecord.Status.SUCCEEDED:
         return {**(record.response_summary or {}), "replayed": True}
+    if record.status == McpIdempotencyRecord.Status.FAILED:
+        raise DomainError(
+            "outcome_unknown",
+            "The external provider outcome is unknown; BrightBean will not retry this action automatically.",
+        )
     raise DomainError(
         "operation_in_progress",
         "An operation with this idempotency key is already in progress.",
         retryable=True,
     )
+
+
+def _wait_for_replay(record_id: Any, *, payload_hash: str) -> dict[str, Any]:
+    """Briefly wait for an in-flight duplicate before returning retryable pending."""
+    deadline = monotonic() + IDEMPOTENCY_REPLAY_WAIT_SECONDS
+    while True:
+        try:
+            record = McpIdempotencyRecord.objects.get(pk=record_id)
+        except McpIdempotencyRecord.DoesNotExist as exc:
+            raise DomainError(
+                "operation_retryable",
+                "The previous attempt failed before completion; retry the confirmed action.",
+                retryable=True,
+            ) from exc
+        try:
+            return _replay(record, payload_hash=payload_hash)
+        except DomainError as exc:
+            if exc.code != "operation_in_progress" or monotonic() >= deadline:
+                raise
+        sleep(IDEMPOTENCY_REPLAY_POLL_SECONDS)
 
 
 def confirmed_action(
@@ -122,6 +151,7 @@ def confirmed_action(
     arguments: Mapping[str, Any],
     preview: Mapping[str, Any],
     execute: Callable[[], Any],
+    outcome_uncertain_on_failure: bool = False,
 ) -> dict[str, Any]:
     """Preview a consequential action, or execute it exactly once after confirmation."""
     payload_hash = canonical_payload_hash(
@@ -164,6 +194,9 @@ def confirmed_action(
 
     stable_credential = credential_digest(principal)
     key_digest = _digest(idempotency_key)
+    replay_record_id = None
+    record = None
+    grant = None
     with transaction.atomic():
         try:
             grant = McpConfirmationGrant.objects.select_for_update().get(token_digest=_digest(token))
@@ -186,37 +219,95 @@ def confirmed_action(
             idempotency_key_digest=key_digest,
         ).first()
         if existing is not None:
-            return _replay(existing, payload_hash=payload_hash)
-        if grant.consumed_at is not None:
-            raise DomainError("confirmation_used", "The confirmation token has already been used.")
+            if existing.payload_hash != payload_hash:
+                return _replay(existing, payload_hash=payload_hash)
+            replay_record_id = existing.pk
+        else:
+            if grant.consumed_at is not None:
+                raise DomainError("confirmation_used", "The confirmation token has already been used.")
 
-        try:
-            with transaction.atomic():
-                record = McpIdempotencyRecord.objects.create(
-                    organization_id=workspace.organization_id,
-                    workspace=workspace,
-                    actor=principal.user,
-                    credential_type=principal.credential_kind,
+            try:
+                with transaction.atomic():
+                    record = McpIdempotencyRecord.objects.create(
+                        organization_id=workspace.organization_id,
+                        workspace=workspace,
+                        actor=principal.user,
+                        credential_type=principal.credential_kind,
+                        credential_digest=stable_credential,
+                        tool_name=tool_name,
+                        idempotency_key_digest=key_digest,
+                        payload_hash=payload_hash,
+                        response_summary={"state": "delivery_reserved"} if outcome_uncertain_on_failure else None,
+                    )
+            except IntegrityError:
+                concurrent = McpIdempotencyRecord.objects.get(
                     credential_digest=stable_credential,
                     tool_name=tool_name,
                     idempotency_key_digest=key_digest,
-                    payload_hash=payload_hash,
                 )
-        except IntegrityError:
-            concurrent = McpIdempotencyRecord.objects.get(
-                credential_digest=stable_credential,
-                tool_name=tool_name,
-                idempotency_key_digest=key_digest,
-            )
-            return _replay(concurrent, payload_hash=payload_hash)
-        grant.consumed_at = timezone.now()
-        grant.save(update_fields=["consumed_at"])
+                if concurrent.payload_hash != payload_hash:
+                    return _replay(concurrent, payload_hash=payload_hash)
+                replay_record_id = concurrent.pk
+            else:
+                grant.consumed_at = timezone.now()
+                grant.save(update_fields=["consumed_at"])
 
+    if replay_record_id is not None:
+        return _wait_for_replay(replay_record_id, payload_hash=payload_hash)
+    assert record is not None
+    assert grant is not None
+
+    # The reservation and consumed grant commit before execution. This is
+    # essential for provider calls: a crash after remote acceptance leaves a
+    # durable PENDING record, so replay fails closed instead of delivering a
+    # duplicate.
+    try:
         response = safe_confirmation_data(execute())
+    except Exception:
+        if outcome_uncertain_on_failure:
+            McpIdempotencyRecord.objects.filter(
+                pk=record.pk,
+                status=McpIdempotencyRecord.Status.PENDING,
+            ).update(
+                status=McpIdempotencyRecord.Status.FAILED,
+                response_summary={"state": "outcome_unknown"},
+                updated_at=timezone.now(),
+            )
+        else:
+            with transaction.atomic():
+                McpIdempotencyRecord.objects.filter(
+                    pk=record.pk,
+                    status=McpIdempotencyRecord.Status.PENDING,
+                ).delete()
+                McpConfirmationGrant.objects.filter(pk=grant.pk).update(consumed_at=None)
+        raise
+
+    with transaction.atomic():
+        record = McpIdempotencyRecord.objects.select_for_update().get(pk=record.pk)
         record.status = McpIdempotencyRecord.Status.SUCCEEDED
         record.response_summary = response
         record.save(update_fields=["status", "response_summary", "updated_at"])
-        return {**response, "replayed": False}
+    return {**response, "replayed": False}
+
+
+def quarantine_stale_external_reservations(*, now=None) -> int:
+    """Fail closed after a worker/process disappears during provider delivery.
+
+    A stale durable reservation means the provider may have accepted the
+    action even though BrightBean never recorded its response. Quarantining it
+    as ``outcome_unknown`` makes that state explicit while preserving the
+    idempotency key so no automated retry can duplicate the external action.
+    """
+    current = now or timezone.now()
+    return McpIdempotencyRecord.objects.filter(
+        status=McpIdempotencyRecord.Status.PENDING,
+        response_summary__state="delivery_reserved",
+        updated_at__lte=current - EXTERNAL_RESERVATION_STALE_AFTER,
+    ).update(
+        status=McpIdempotencyRecord.Status.FAILED,
+        response_summary={"state": "outcome_unknown"},
+        updated_at=current,
+    )
 
 
 def invoke_tool_with_confirmation(tool: Any, arguments: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -242,6 +333,7 @@ def invoke_tool_with_confirmation(tool: Any, arguments: dict[str, Any], context:
         arguments=arguments,
         preview=arguments,
         execute=execute,
+        outcome_uncertain_on_failure=tool.name == "send_inbox_reply",
     )
     request = context.get("request")
     if request is not None:

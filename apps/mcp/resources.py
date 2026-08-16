@@ -29,6 +29,7 @@ _RESOURCE_ROUTES: tuple[tuple[re.Pattern[str], str, dict[str, Any]], ...] = (
         "get_workspace_analytics",
         {"days": int},
     ),
+    (re.compile(r"^brightbean://workspaces/(?P<workspace_id>[0-9a-f-]+)/inbox$"), "list_inbox", {}),
     (
         re.compile(r"^brightbean://workspaces/(?P<workspace_id>[0-9a-f-]+)/inbox/(?P<message_id>[0-9a-f-]+)$"),
         "get_inbox_message",
@@ -46,6 +47,7 @@ RESOURCE_TEMPLATES = (
     ),
     ("workspace_post", "brightbean://workspaces/{workspace_id}/posts/{post_id}", "One authorized post"),
     ("workspace_analytics", "brightbean://workspaces/{workspace_id}/analytics/{days}", "Workspace analytics"),
+    ("workspace_inbox", "brightbean://workspaces/{workspace_id}/inbox", "Authorized inbox messages"),
     ("workspace_inbox_message", "brightbean://workspaces/{workspace_id}/inbox/{message_id}", "One inbox message"),
 )
 
@@ -90,6 +92,7 @@ def list_resources(principal, request) -> list[dict[str, Any]]:
         for suffix, tool_name, title in (
             ("context", "get_workspace_context", "context"),
             ("accounts", "list_accounts", "accounts"),
+            ("inbox", "list_inbox", "inbox"),
         ):
             try:
                 _invoke_read_tool(principal, request, tool_name, str(item.workspace.id), {})

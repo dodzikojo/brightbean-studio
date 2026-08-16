@@ -131,6 +131,46 @@ def test_send_inbox_reply_previews_then_executes_exactly_once(django_user_model)
     assert InboxReply.objects.filter(inbox_message=message).count() == 1
 
 
+@pytest.mark.django_db
+def test_send_inbox_reply_does_not_redeliver_after_ambiguous_provider_failure(django_user_model):
+    from apps.mcp.models import McpIdempotencyRecord
+    from apps.social_accounts.models import SocialAccount
+
+    user = _user(django_user_model, "inbox-reply-unknown@example.com")
+    workspace = _workspace("Inbox reply unknown")
+    principal = _oauth_principal(user, workspace)
+    account = SocialAccount.objects.create(
+        workspace=workspace,
+        platform="facebook",
+        account_platform_id="inbox-reply-unknown-account",
+        account_name="Inbox account",
+    )
+    message = _message(workspace, account)
+    arguments = {
+        "workspace_id": str(workspace.id),
+        "message_id": str(message.id),
+        "body": "This must not be delivered twice.",
+    }
+    preview = _call(principal, "send_inbox_reply", arguments)
+    confirmed_args = {
+        **arguments,
+        "confirmation_token": preview["confirmation_token"],
+        "idempotency_key": "reply-unknown-once",
+    }
+
+    with patch(
+        "apps.inbox.services._send_platform_reply",
+        side_effect=TimeoutError("provider outcome unknown"),
+    ) as sender:
+        with pytest.raises(TimeoutError):
+            _call(principal, "send_inbox_reply", confirmed_args)
+        replay = _call(principal, "send_inbox_reply", confirmed_args)
+
+    assert replay["error"]["code"] == "outcome_unknown"
+    assert sender.call_count == 1
+    assert McpIdempotencyRecord.objects.get().response_summary == {"state": "outcome_unknown"}
+
+
 def test_inbox_registry_metadata_requires_correct_scopes_permissions_and_confirmation():
     from apps.mcp.registry import all_tools
 

@@ -8,7 +8,7 @@ from datetime import timedelta
 from threading import Event, Lock
 
 import pytest
-from django.db import close_old_connections
+from django.db import close_old_connections, connection
 from django.utils import timezone
 
 from apps.mcp.errors import DomainError
@@ -305,6 +305,128 @@ def test_failed_execution_releases_claim_and_keeps_grant_reusable(django_user_mo
         execute=lambda: {"post_id": arguments["post_id"], "status": "scheduled"},
     )
     assert recovered["status"] == "scheduled"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_external_execution_starts_after_durable_idempotency_reservation(django_user_model):
+    from apps.mcp.confirmations import confirmed_action
+    from apps.mcp.models import McpConfirmationGrant, McpIdempotencyRecord
+
+    principal, workspace = _context(django_user_model)
+    arguments = _arguments()
+    preview = confirmed_action(
+        principal=principal,
+        workspace=workspace,
+        tool_name="send_inbox_reply",
+        arguments=arguments,
+        preview=arguments,
+        execute=lambda: None,
+    )
+
+    def execute():
+        assert connection.in_atomic_block is False
+        record = McpIdempotencyRecord.objects.get()
+        assert record.status == McpIdempotencyRecord.Status.PENDING
+        assert McpConfirmationGrant.objects.get().consumed_at is not None
+        return {"id": arguments["post_id"], "status": "sent"}
+
+    result = confirmed_action(
+        principal=principal,
+        workspace=workspace,
+        tool_name="send_inbox_reply",
+        arguments={
+            **arguments,
+            "confirmation_token": preview["confirmation_token"],
+            "idempotency_key": "durable-before-delivery",
+        },
+        preview=arguments,
+        execute=execute,
+        outcome_uncertain_on_failure=True,
+    )
+
+    assert result["status"] == "sent"
+
+
+@pytest.mark.django_db
+def test_external_failure_keeps_reservation_and_blocks_duplicate_delivery(django_user_model):
+    from apps.mcp.confirmations import confirmed_action
+    from apps.mcp.models import McpConfirmationGrant, McpIdempotencyRecord
+
+    principal, workspace = _context(django_user_model)
+    arguments = _arguments()
+    preview = confirmed_action(
+        principal=principal,
+        workspace=workspace,
+        tool_name="send_inbox_reply",
+        arguments=arguments,
+        preview=arguments,
+        execute=lambda: None,
+    )
+    confirmed_arguments = {
+        **arguments,
+        "confirmation_token": preview["confirmation_token"],
+        "idempotency_key": "unknown-provider-outcome",
+    }
+    executions = 0
+
+    def uncertain_delivery():
+        nonlocal executions
+        executions += 1
+        raise TimeoutError("provider timed out after accepting the request")
+
+    with pytest.raises(TimeoutError):
+        confirmed_action(
+            principal=principal,
+            workspace=workspace,
+            tool_name="send_inbox_reply",
+            arguments=confirmed_arguments,
+            preview=arguments,
+            execute=uncertain_delivery,
+            outcome_uncertain_on_failure=True,
+        )
+
+    record = McpIdempotencyRecord.objects.get()
+    assert record.status == McpIdempotencyRecord.Status.FAILED
+    assert record.response_summary == {"state": "outcome_unknown"}
+    assert McpConfirmationGrant.objects.get().consumed_at is not None
+
+    with pytest.raises(DomainError) as retry:
+        confirmed_action(
+            principal=principal,
+            workspace=workspace,
+            tool_name="send_inbox_reply",
+            arguments=confirmed_arguments,
+            preview=arguments,
+            execute=uncertain_delivery,
+            outcome_uncertain_on_failure=True,
+        )
+    assert retry.value.code == "outcome_unknown"
+    assert executions == 1
+
+
+@pytest.mark.django_db
+def test_stale_external_reservation_is_quarantined_without_redelivery(django_user_model):
+    from apps.mcp.confirmations import quarantine_stale_external_reservations
+    from apps.mcp.models import McpIdempotencyRecord
+
+    principal, workspace = _context(django_user_model)
+    record = McpIdempotencyRecord.objects.create(
+        organization_id=workspace.organization_id,
+        workspace=workspace,
+        actor=principal.user,
+        credential_type=principal.credential_kind,
+        credential_digest="a" * 64,
+        tool_name="send_inbox_reply",
+        idempotency_key_digest="b" * 64,
+        payload_hash="c" * 64,
+        response_summary={"state": "delivery_reserved"},
+    )
+    McpIdempotencyRecord.objects.filter(pk=record.pk).update(updated_at=timezone.now() - timedelta(minutes=20))
+
+    assert quarantine_stale_external_reservations() == 1
+    record.refresh_from_db()
+    assert record.status == McpIdempotencyRecord.Status.FAILED
+    assert record.response_summary == {"state": "outcome_unknown"}
 
 
 @pytest.mark.django_db

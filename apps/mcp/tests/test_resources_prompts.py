@@ -89,6 +89,22 @@ def test_prompts_require_explicit_workspace_and_only_return_guidance(django_user
     assert "create_" not in rendered.lower()
     assert "schedule_" not in rendered.lower()
 
+    inbox_prompt = METHODS["prompts/get"](
+        {
+            "name": "triage_inbox",
+            "arguments": {"workspace_id": str(first.id)},
+        },
+        context,
+    )
+    inbox_uri = f"brightbean://workspaces/{first.id}/inbox"
+    assert inbox_uri in str(inbox_prompt)
+    inbox_resource = METHODS["resources/read"]({"uri": inbox_uri}, context)
+    inbox_payload = json.loads(inbox_resource["contents"][0]["text"])
+    assert inbox_payload == {"messages": [], "limit": 50, "next_cursor": None}
+
+    templates = METHODS["resources/templates/list"]({}, context)
+    assert any(template["uriTemplate"].endswith("/{workspace_id}/inbox") for template in templates["resourceTemplates"])
+
 
 def test_initialize_advertises_resource_and_prompt_capabilities():
     from apps.mcp.legacy import _initialize
