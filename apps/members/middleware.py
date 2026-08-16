@@ -14,10 +14,10 @@ class RBACMiddleware:
         request.workspace - the current Workspace (or None, set by views)
         request.workspace_membership - the WorkspaceMembership (or None)
 
-    Note: v1 supports one org per user. The query uses .first() which is
-    correct since unique_together=("user", "organization") and v1 only
-    creates one org membership per user. If multi-org is added later,
-    this must resolve org from URL or session context.
+    Global pages resolve their organization from the user's active
+    ``last_workspace_id`` when possible. This keeps organization-scoped
+    settings attached to the same workspace context shown in the sidebar
+    for users who belong to more than one organization.
 
     Resolution happens in process_view (not __call__) because
     request.resolver_match is only available after URL resolution,
@@ -62,6 +62,17 @@ class RBACMiddleware:
                 if ws_membership:
                     request.workspace = ws_membership.workspace
                     request.workspace_membership = ws_membership
+                    active_org_membership = (
+                        OrgMembership.objects.filter(
+                            user=request.user,
+                            organization=ws_membership.workspace.organization,
+                        )
+                        .select_related("organization")
+                        .first()
+                    )
+                    if active_org_membership:
+                        request.org = active_org_membership.organization
+                        request.org_membership = active_org_membership
 
         return self.get_response(request)
 

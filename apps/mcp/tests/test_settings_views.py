@@ -7,6 +7,8 @@ from django.utils import timezone
 
 from apps.mcp.models import McpActivityEvent, McpOrganizationConfig, McpToolPolicy
 from apps.members.models import OrgMembership, WorkspaceMembership
+from apps.organizations.models import Organization
+from apps.workspaces.models import Workspace
 
 
 def _user(django_user_model, email: str):
@@ -86,6 +88,44 @@ def test_org_admin_sees_connection_status_and_can_toggle_organization(client, mc
     response = client.post(reverse("settings_manager:mcp_overview"), {"enabled": "false"})
     assert response.status_code == 302
     assert McpOrganizationConfig.objects.get(organization=organization).enabled is False
+
+
+@pytest.mark.django_db
+def test_global_mcp_settings_use_the_last_workspaces_organization(client, django_user_model):
+    """A second org must not inherit or mutate the user's first org policy."""
+    admin = _user(django_user_model, "multi-org-mcp-admin@example.com")
+    first_org = admin.org_memberships.get().organization
+    first_workspace = admin.workspace_memberships.get().workspace
+
+    active_org = Organization.objects.create(
+        id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        name="Active Organization",
+    )
+    active_workspace = Workspace.objects.create(organization=active_org, name="ClashWise")
+    OrgMembership.objects.create(
+        user=admin,
+        organization=active_org,
+        org_role=OrgMembership.OrgRole.OWNER,
+    )
+    WorkspaceMembership.objects.create(
+        user=admin,
+        workspace=active_workspace,
+        workspace_role=WorkspaceMembership.WorkspaceRole.OWNER,
+    )
+    admin.last_workspace_id = active_workspace.id
+    admin.save(update_fields=["last_workspace_id"])
+
+    client = _logged_in(client, admin)
+    response = client.get(reverse("settings_manager:mcp_overview"))
+
+    assert response.status_code == 200
+    assert response.context["available_workspaces"] == [active_workspace]
+    assert first_workspace not in response.context["available_workspaces"]
+
+    response = client.post(reverse("settings_manager:mcp_overview"), {"enabled": "false"})
+    assert response.status_code == 302
+    assert McpOrganizationConfig.objects.get(organization=active_org).enabled is False
+    assert not McpOrganizationConfig.objects.filter(organization=first_org).exists()
 
 
 @pytest.mark.django_db
