@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from django.db.models import Max
 from django.utils import timezone
 
-from apps.analytics.api_builders import build_account_analytics
+from apps.analytics.api_builders import build_account_analytics, build_post_analytics
 from apps.analytics.models import PostInsightsSnapshot
 from apps.composer.models import PlatformPost
 from apps.mcp.errors import DomainError
@@ -21,6 +21,33 @@ from apps.mcp.results import success_result
 
 _ENGAGEMENT_KEYS = ("likes", "comments", "shares", "clicks", "saves")
 _MIN_BEST_TIME_SAMPLE = 3
+
+
+def get_account_analytics(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    """Return the same account analytics payload as REST through the focused module."""
+    from apps.mcp.handlers import _require_perm, _resolve_allowed_account, _wrap_text
+    from apps.mcp.protocol import INVALID_PARAMS, JsonRpcError
+
+    _require_perm(context, "view_analytics")
+    if "account_id" not in args:
+        raise JsonRpcError(INVALID_PARAMS, "account_id is required")
+    days = args.get("days", 30)
+    if not isinstance(days, int) or isinstance(days, bool) or days < 7 or days > 90:
+        raise JsonRpcError(INVALID_PARAMS, "days must be an integer between 7 and 90")
+    account = _resolve_allowed_account(context["api_key"], args["account_id"])
+    return _wrap_text(build_account_analytics(account, days).model_dump(mode="json"))
+
+
+def get_post_analytics(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    """Return REST-parity post analytics through the focused module."""
+    from apps.mcp.handlers import _get_post_for_key, _require_perm, _wrap_text
+    from apps.mcp.protocol import INVALID_PARAMS, JsonRpcError
+
+    _require_perm(context, "view_analytics")
+    if "post_id" not in args:
+        raise JsonRpcError(INVALID_PARAMS, "post_id is required")
+    post = _get_post_for_key(context["api_key"], args["post_id"])
+    return _wrap_text(build_post_analytics(post).model_dump(mode="json"))
 
 
 def _days(args: dict[str, Any]) -> int:

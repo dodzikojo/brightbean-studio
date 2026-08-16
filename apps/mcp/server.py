@@ -422,9 +422,7 @@ async def _read_resource(
 ) -> types.ReadResourceResult:
     access_token = _authenticated_context(ctx)
     result = await sync_to_async(_read_resource_sync, thread_sensitive=True)(access_token, str(params.uri))
-    return types.ReadResourceResult(
-        contents=[types.TextResourceContents(**content) for content in result["contents"]]
-    )
+    return types.ReadResourceResult(contents=[types.TextResourceContents(**content) for content in result["contents"]])
 
 
 async def _list_prompts(

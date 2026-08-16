@@ -128,6 +128,22 @@ def test_existing_tools_expose_meaningful_policy_metadata():
     assert tools["cancel_post"].required_permissions == ("create_posts",)
 
 
+def test_media_and_legacy_analytics_invocation_routes_through_focused_modules(monkeypatch):
+    from apps.mcp import analytics, media
+
+    media_result = success_result({"module": "media"})
+    analytics_result = success_result({"module": "analytics"})
+    monkeypatch.setattr(media, "search_media", lambda arguments, context: media_result)
+    monkeypatch.setattr(analytics, "get_account_analytics", lambda arguments, context: analytics_result)
+
+    search_tool = get_tool("search_media")
+    analytics_tool = get_tool("get_account_analytics")
+    assert search_tool is not None
+    assert analytics_tool is not None
+    assert search_tool.handler({}, {}) == media_result
+    assert analytics_tool.handler({}, {}) == analytics_result
+
+
 def test_existing_tools_have_shape_specific_output_schemas():
     tools = {tool.name: tool for tool in all_tools()}
 

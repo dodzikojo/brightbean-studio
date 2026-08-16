@@ -437,24 +437,35 @@ class TestMcpToPublisherChain:
 
     def test_mcp_schedule_post_lands_in_scheduled(self, client_with_token, social_account):
         past = (timezone.now() - timedelta(minutes=1)).isoformat()
-        r = client_with_token.post(
-            "/api/v1/mcp/",
-            data=json.dumps(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "schedule_post",
-                        "arguments": {
-                            "social_account_id": str(social_account.id),
-                            "caption": "via mcp",
-                            "scheduled_at": past,
-                        },
-                    },
-                }
-            ),
-            content_type="application/json",
+        arguments = {
+            "social_account_id": str(social_account.id),
+            "caption": "via mcp",
+            "scheduled_at": past,
+        }
+
+        def call(call_arguments):
+            return client_with_token.post(
+                "/api/v1/mcp/",
+                data=json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {"name": "schedule_post", "arguments": call_arguments},
+                    }
+                ),
+                content_type="application/json",
+            )
+
+        preview = call(arguments).json()["result"]["structuredContent"]
+        assert preview["confirmation_required"] is True
+        assert not PlatformPost.objects.exists()
+        r = call(
+            {
+                **arguments,
+                "confirmation_token": preview["confirmation_token"],
+                "idempotency_key": "e2e-schedule-once",
+            }
         )
         body = r.json()
         assert "error" not in body, body

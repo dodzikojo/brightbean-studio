@@ -19,9 +19,21 @@ _RESOURCE_ROUTES: tuple[tuple[re.Pattern[str], str, dict[str, Any]], ...] = (
         "get_calendar",
         {},
     ),
-    (re.compile(r"^brightbean://workspaces/(?P<workspace_id>[0-9a-f-]+)/posts/(?P<post_id>[0-9a-f-]+)$"), "get_post", {}),
-    (re.compile(r"^brightbean://workspaces/(?P<workspace_id>[0-9a-f-]+)/analytics/(?P<days>\d+)$"), "get_workspace_analytics", {"days": int}),
-    (re.compile(r"^brightbean://workspaces/(?P<workspace_id>[0-9a-f-]+)/inbox/(?P<message_id>[0-9a-f-]+)$"), "get_inbox_message", {}),
+    (
+        re.compile(r"^brightbean://workspaces/(?P<workspace_id>[0-9a-f-]+)/posts/(?P<post_id>[0-9a-f-]+)$"),
+        "get_post",
+        {},
+    ),
+    (
+        re.compile(r"^brightbean://workspaces/(?P<workspace_id>[0-9a-f-]+)/analytics/(?P<days>\d+)$"),
+        "get_workspace_analytics",
+        {"days": int},
+    ),
+    (
+        re.compile(r"^brightbean://workspaces/(?P<workspace_id>[0-9a-f-]+)/inbox/(?P<message_id>[0-9a-f-]+)$"),
+        "get_inbox_message",
+        {},
+    ),
 )
 
 RESOURCE_TEMPLATES = (

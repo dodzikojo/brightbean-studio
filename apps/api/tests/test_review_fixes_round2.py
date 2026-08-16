@@ -563,20 +563,30 @@ class TestMcpCancelAtomic:
 
         monkeypatch.setattr("apps.mcp.handlers.transition_platform_post", flaky)
 
-        r = owner_client.post(
-            "/api/v1/mcp/",
-            data=json.dumps(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "cancel_post",
-                        "arguments": {"post_id": str(post.id)},
-                    },
-                }
-            ),
-            content_type="application/json",
+        arguments = {"post_id": str(post.id)}
+
+        def call(call_arguments):
+            return owner_client.post(
+                "/api/v1/mcp/",
+                data=json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {"name": "cancel_post", "arguments": call_arguments},
+                    }
+                ),
+                content_type="application/json",
+            )
+
+        preview = call(arguments).json()["result"]["structuredContent"]
+        assert preview["confirmation_required"] is True
+        r = call(
+            {
+                **arguments,
+                "confirmation_token": preview["confirmation_token"],
+                "idempotency_key": "cancel-atomic-once",
+            }
         )
         # JSON-RPC error envelope, but the key claim is the DB state.
         assert "error" in r.json()

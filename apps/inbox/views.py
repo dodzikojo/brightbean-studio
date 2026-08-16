@@ -216,6 +216,7 @@ def message_detail(request, workspace_id, message_id):
 
 # --- Reply ---
 
+
 def _reply_failure_reason(exc: Exception) -> str:
     """A short, actionable reason for the user.
 

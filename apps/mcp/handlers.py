@@ -15,6 +15,7 @@ type, and agents can always ``JSON.parse`` it.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from importlib import import_module
 from typing import Any
 from uuid import UUID
 
@@ -34,6 +35,16 @@ from apps.social_accounts.models import SocialAccount
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _focused_handler(module_name: str, function_name: str):
+    """Resolve a focused handler lazily, avoiding import cycles at app boot."""
+
+    def handler(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        module = import_module(f"apps.mcp.{module_name}")
+        return getattr(module, function_name)(args, context)
+
+    return handler
 
 
 def _wrap_text(payload: Any) -> dict:
@@ -755,7 +766,7 @@ register_tool(
             },
             "additionalProperties": False,
         },
-        handler=_search_media,
+        handler=_focused_handler("media", "search_media"),
     )
 )
 
@@ -789,7 +800,7 @@ register_tool(
             "required": ["media_id"],
             "additionalProperties": False,
         },
-        handler=_get_media,
+        handler=_focused_handler("media", "get_media"),
     )
 )
 
@@ -894,7 +905,7 @@ register_tool(
             "required": ["filename", "content_base64"],
             "additionalProperties": False,
         },
-        handler=_upload_media,
+        handler=_focused_handler("media", "upload_media"),
     )
 )
 
@@ -1077,7 +1088,7 @@ register_tool(
             "required": ["filename", "media_type"],
             "additionalProperties": False,
         },
-        handler=_request_media_upload,
+        handler=_focused_handler("media", "request_media_upload"),
     )
 )
 
@@ -1104,7 +1115,7 @@ register_tool(
             "required": ["upload_id"],
             "additionalProperties": False,
         },
-        handler=_finalize_media_upload,
+        handler=_focused_handler("media", "finalize_media_upload"),
     )
 )
 
@@ -1166,7 +1177,7 @@ register_tool(
             "required": ["account_id"],
             "additionalProperties": False,
         },
-        handler=_get_account_analytics,
+        handler=_focused_handler("analytics", "get_account_analytics"),
     )
 )
 
@@ -1217,6 +1228,6 @@ register_tool(
             "required": ["post_id"],
             "additionalProperties": False,
         },
-        handler=_get_post_analytics,
+        handler=_focused_handler("analytics", "get_post_analytics"),
     )
 )

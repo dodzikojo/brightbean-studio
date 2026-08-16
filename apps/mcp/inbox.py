@@ -25,12 +25,7 @@ def _message(context: dict[str, Any], message_id: str) -> InboxMessage:
         parsed = UUID(message_id)
     except (TypeError, ValueError, AttributeError) as exc:
         raise DomainError("invalid_request", "message_id must be a valid UUID.") from exc
-    message = (
-        _messages(context)
-        .select_related("social_account", "assigned_to", "workspace")
-        .filter(id=parsed)
-        .first()
-    )
+    message = _messages(context).select_related("social_account", "assigned_to", "workspace").filter(id=parsed).first()
     if message is None:
         raise DomainError("resource_not_found", "Inbox message not found.")
     return message

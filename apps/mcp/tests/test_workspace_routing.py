@@ -174,7 +174,12 @@ def test_resolved_account_ids_are_workspace_limited_for_oauth_and_key():
     assert oauth_context.allowed_account_ids == frozenset({first_account.id})
 
     key_principal = replace(_oauth_principal(user), credential_kind="api_key", workspace_pin_id=first.id)
-    key_principal = replace(key_principal, authorized_workspaces=(key_principal.authorized_workspaces[0],))
+    key_principal = replace(
+        key_principal,
+        authorized_workspaces=tuple(
+            item for item in key_principal.authorized_workspaces if item.workspace.id == first.id
+        ),
+    )
     key_principal = replace(key_principal, account_allowlist_ids=frozenset({first_account.id, uuid4()}))
     key_context = resolve_workspace(key_principal, None)
     assert key_context.allowed_account_ids == frozenset({first_account.id})
