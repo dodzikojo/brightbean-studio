@@ -1107,7 +1107,7 @@ def publish_tab_sent(request, workspace_id):
 @require_POST
 def reschedule_post(request, workspace_id):
     """HTMX endpoint for drag-and-drop rescheduling of a single PlatformPost."""
-    from apps.composer.services import sync_post_scheduled_at
+    from apps.calendar.services import reschedule_platform_post
 
     workspace = _get_workspace(request, workspace_id)
     platform_post_id = request.POST.get("platform_post_id") or request.POST.get("post_id")
@@ -1149,30 +1149,7 @@ def reschedule_post(request, workspace_id):
         new_dt = datetime.fromisoformat(new_datetime_str)
         if new_dt.tzinfo is None:
             new_dt = new_dt.replace(tzinfo=tz)
-        pp.scheduled_at = new_dt
-        # Dropping a draft or a failed chip onto the calendar is an implicit
-        # (re)schedule / retry: move it into "scheduled" so the publisher picks
-        # it up. Other statuses (approved, scheduled, pending_*) just change
-        # time and keep their editorial status.
-        fields = ["status", "scheduled_at", "updated_at"]
-        if pp.status == "failed":
-            # Retrying: don't carry the previous attempt's failure state into
-            # the fresh one (a stale publish_error renders on the chip, and a
-            # stale retry_count eats the new attempt's retry budget).
-            pp.publish_error = ""
-            pp.retry_count = 0
-            pp.next_retry_at = None
-            fields += ["publish_error", "retry_count", "next_retry_at"]
-        if pp.status in _IMPLICIT_SCHEDULE_STATUSES and pp.can_transition_to("scheduled"):
-            pp.transition_to("scheduled")
-        pp.save(update_fields=fields)
-        # Keep any queue entry's slot mirror in step with the manual reschedule
-        # so the queue list shows the real time (the slot ops read scheduled_at,
-        # but the detail page still orders by assigned_slot_datetime).
-        QueueEntry.objects.filter(post=post, queue__social_account=pp.social_account).update(
-            assigned_slot_datetime=new_dt
-        )
-        sync_post_scheduled_at(post)
+        reschedule_platform_post(pp, new_dt)
     except (ValueError, TypeError) as e:
         return JsonResponse({"error": f"Invalid datetime: {e}"}, status=400)
 

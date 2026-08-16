@@ -113,27 +113,51 @@ _READ_TOOLS = frozenset(
     {
         "get_account_analytics",
         "get_account_health",
+        "get_calendar",
         "get_media",
         "get_post",
         "get_post_analytics",
         "get_workspace_context",
         "list_accounts",
         "list_ideas",
+        "list_post_comments",
         "list_posts",
+        "list_queues",
         "list_workspaces",
         "search_media",
     }
 )
-_PUBLISH_TOOLS = frozenset({"cancel_post", "schedule_draft", "schedule_post"})
+_PUBLISH_TOOLS = frozenset(
+    {
+        "approve_post",
+        "cancel_post",
+        "enqueue_post",
+        "publish_post",
+        "reject_post",
+        "reschedule_post",
+        "request_changes",
+        "schedule_draft",
+        "schedule_post",
+        "submit_for_review",
+    }
+)
 _PUBLISH_PERMISSIONS = {
+    "approve_post": ("approve_posts",),
     "cancel_post": ("create_posts",),
+    "enqueue_post": ("create_posts", "publish_directly"),
+    "publish_post": ("create_posts", "publish_directly"),
+    "reject_post": ("approve_posts",),
+    "request_changes": ("approve_posts",),
+    "reschedule_post": ("create_posts", "publish_directly"),
     "schedule_draft": ("create_posts", "publish_directly"),
     "schedule_post": ("create_posts", "publish_directly"),
+    "submit_for_review": ("create_posts",),
 }
 _CONTENT_TOOLS = frozenset(
     {
         "clone_post",
         "convert_idea_to_draft",
+        "add_post_comment",
         "create_draft",
         "create_idea",
         "finalize_media_upload",
@@ -144,6 +168,7 @@ _CONTENT_TOOLS = frozenset(
     }
 )
 _CONTENT_PERMISSIONS = {
+    "add_post_comment": ("create_posts",),
     "clone_post": ("create_posts",),
     "convert_idea_to_draft": ("create_posts",),
     "create_draft": ("create_posts",),
@@ -290,6 +315,78 @@ class _ListIdeasOutput(_StrictOutput):
     next_cursor: str | None
 
 
+class _CommentOutput(_StrictOutput):
+    id: UUID
+    post_id: UUID
+    author_id: UUID | None
+    author_name: str
+    parent_comment_id: UUID | None
+    body: str
+    visibility: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class _ListCommentsOutput(_StrictOutput):
+    comments: list[_CommentOutput]
+    limit: int
+    next_cursor: str | None
+
+
+class _CalendarPost(_StrictOutput):
+    post_id: UUID
+    platform_post_id: UUID
+    social_account_id: UUID
+    platform: str
+    title: str
+    status: str
+    scheduled_at: datetime | None
+
+
+class _CalendarEvent(_StrictOutput):
+    id: UUID
+    title: str
+    description: str
+    start_date: str
+    end_date: str
+    color: str
+
+
+class _CalendarOutput(_StrictOutput):
+    start_date: str
+    end_date: str
+    posts: list[_CalendarPost]
+    events: list[_CalendarEvent]
+
+
+class _QueueOutput(_StrictOutput):
+    id: UUID
+    name: str
+    social_account_id: UUID
+    platform: str
+    category_id: UUID | None
+    is_active: bool
+    entry_count: int
+
+
+class _ListQueuesOutput(_StrictOutput):
+    queues: list[_QueueOutput]
+
+
+class _TransitionOutput(_StrictOutput):
+    id: UUID
+    post_id: UUID
+    status: str
+
+
+class _ScheduledTransitionOutput(_TransitionOutput):
+    scheduled_at: datetime
+
+
+class _QueueTransitionOutput(_ScheduledTransitionOutput):
+    queue_id: UUID
+
+
 def _typed_output_schema(model: type[BaseModel]) -> dict[str, Any]:
     """Advertise one exact success shape plus BrightBean's common error shape."""
     success_schema = model.model_json_schema(mode="serialization")
@@ -310,6 +407,17 @@ _OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     "list_ideas": _typed_output_schema(_ListIdeasOutput),
     "create_idea": _typed_output_schema(_IdeaOutput),
     "update_idea": _typed_output_schema(_IdeaOutput),
+    "add_post_comment": _typed_output_schema(_CommentOutput),
+    "list_post_comments": _typed_output_schema(_ListCommentsOutput),
+    "get_calendar": _typed_output_schema(_CalendarOutput),
+    "list_queues": _typed_output_schema(_ListQueuesOutput),
+    "submit_for_review": _typed_output_schema(_TransitionOutput),
+    "approve_post": _typed_output_schema(_TransitionOutput),
+    "request_changes": _typed_output_schema(_TransitionOutput),
+    "reject_post": _typed_output_schema(_TransitionOutput),
+    "enqueue_post": _typed_output_schema(_QueueTransitionOutput),
+    "reschedule_post": _typed_output_schema(_ScheduledTransitionOutput),
+    "publish_post": _typed_output_schema(_ScheduledTransitionOutput),
     "list_accounts": _typed_output_schema(_ListAccountsOutput),
     "list_posts": _typed_output_schema(_ListPostsOutput),
     "search_media": _typed_output_schema(_SearchMediaOutput),

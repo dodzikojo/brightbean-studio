@@ -25,6 +25,8 @@ from apps.mcp.results import (
 
 EXPECTED_LEGACY_TOOL_NAMES = {
     "cancel_post",
+    "add_post_comment",
+    "approve_post",
     "clone_post",
     "convert_idea_to_draft",
     "create_draft",
@@ -32,18 +34,27 @@ EXPECTED_LEGACY_TOOL_NAMES = {
     "finalize_media_upload",
     "get_account_analytics",
     "get_account_health",
+    "get_calendar",
     "get_media",
     "get_post",
     "get_post_analytics",
     "get_workspace_context",
     "list_accounts",
     "list_ideas",
+    "list_post_comments",
     "list_posts",
+    "list_queues",
+    "enqueue_post",
+    "publish_post",
     "list_workspaces",
     "request_media_upload",
+    "request_changes",
+    "reject_post",
+    "reschedule_post",
     "schedule_draft",
     "schedule_post",
     "search_media",
+    "submit_for_review",
     "update_draft",
     "update_idea",
     "upload_media",
@@ -239,7 +250,53 @@ def _representative_success_payloads() -> dict[str, dict]:
         "created_at": "2026-08-16T09:00:00+00:00",
         "updated_at": "2026-08-16T09:00:00+00:00",
     }
+    comment = {
+        "id": "60000000-0000-0000-0000-000000000001",
+        "post_id": post["id"],
+        "author_id": "60000000-0000-0000-0000-000000000002",
+        "author_name": "Editor",
+        "parent_comment_id": None,
+        "body": "Editorial note",
+        "visibility": "internal",
+        "created_at": "2026-08-16T09:00:00+00:00",
+        "updated_at": "2026-08-16T09:00:00+00:00",
+    }
+    transition = {"id": post["id"], "post_id": post["id"], "status": "pending_review"}
+    calendar_action = {
+        "id": "70000000-0000-0000-0000-000000000001",
+        "post_id": post["id"],
+        "status": "scheduled",
+        "scheduled_at": "2026-08-17T09:00:00+00:00",
+    }
     return {
+        "add_post_comment": comment,
+        "list_post_comments": {"comments": [comment], "limit": 50, "next_cursor": None},
+        "submit_for_review": transition,
+        "approve_post": {**transition, "status": "approved"},
+        "request_changes": {**transition, "status": "changes_requested"},
+        "reject_post": {**transition, "status": "rejected"},
+        "get_calendar": {
+            "start_date": "2026-08-16",
+            "end_date": "2026-08-23",
+            "posts": [],
+            "events": [],
+        },
+        "list_queues": {
+            "queues": [
+                {
+                    "id": "70000000-0000-0000-0000-000000000001",
+                    "name": "Main",
+                    "social_account_id": account["id"],
+                    "platform": "linkedin",
+                    "category_id": None,
+                    "is_active": True,
+                    "entry_count": 1,
+                }
+            ]
+        },
+        "enqueue_post": {**calendar_action, "queue_id": "70000000-0000-0000-0000-000000000002"},
+        "reschedule_post": calendar_action,
+        "publish_post": calendar_action,
         "list_workspaces": {
             "workspaces": [
                 {
