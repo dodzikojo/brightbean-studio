@@ -210,8 +210,9 @@ class TestMcpOAuthSuccess:
                 "tools/call", {"name": "create_draft", "arguments": {"social_account_id": str(sa.id), "caption": "hi"}}
             ),
         )
-        assert body["error"]["code"] == INVALID_PARAMS
-        assert "Permission denied" in body["error"]["message"]
+        error = body["result"]["structuredContent"]["error"]
+        assert error["code"] == "forbidden"
+        assert error["message"] == "This credential cannot use that tool."
 
     def test_oauth_call_writes_user_attributed_audit_row(self):
         from apps.api_keys.models import ApiKeyAuditLog

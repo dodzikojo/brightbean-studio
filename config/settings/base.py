@@ -520,6 +520,9 @@ OAUTH2_PROVIDER = {
     # Claude's OAuth callback is always https; reject non-TLS redirect URIs.
     "ALLOWED_REDIRECT_URI_SCHEMES": ["https"],
 }
+# DOT marks its application model as swappable. Declaring the default explicitly
+# lets Django resolve migration dependencies for models that reference OAuth clients.
+OAUTH2_PROVIDER_APPLICATION_MODEL = "oauth2_provider.Application"
 
 
 # ---------------------------------------------------------------------------

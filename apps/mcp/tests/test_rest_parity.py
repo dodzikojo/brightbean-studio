@@ -400,8 +400,9 @@ class TestMcpAnalyticsPermissionGate:
             content_type="application/json",
         )
         body = mcp.json()
-        assert "error" in body, body
-        assert "permission denied" in body["error"]["message"].lower()
+        error = body["result"]["structuredContent"]["error"]
+        assert error["code"] == "forbidden"
+        assert error["message"] == "This credential cannot use that tool."
 
     def test_post_analytics_tool_requires_view_analytics(self, analytics_client_no_perm, published_ig_post):
         post, _pp = published_ig_post
@@ -416,8 +417,9 @@ class TestMcpAnalyticsPermissionGate:
             content_type="application/json",
         )
         body = mcp.json()
-        assert "error" in body, body
-        assert "permission denied" in body["error"]["message"].lower()
+        error = body["result"]["structuredContent"]["error"]
+        assert error["code"] == "forbidden"
+        assert error["message"] == "This credential cannot use that tool."
 
 
 # ---------------------------------------------------------------------------

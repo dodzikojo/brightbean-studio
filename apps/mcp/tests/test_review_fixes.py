@@ -228,6 +228,43 @@ class TestMcpAuditStatusDerivation:
         latest = ApiKeyAuditLog.objects.filter(api_key=issued_key.api_key).latest("created_at")
         assert latest.status_code == 202
 
+    def test_failed_tool_call_records_redacted_mcp_activity(self, client_with_token, issued_key):
+        from apps.mcp.models import McpActivityEvent
+
+        r = client_with_token.post(
+            MCP_URL,
+            data=json.dumps(
+                _tool_call_msg(
+                    "create_draft",
+                    {"caption": "private legacy campaign content"},
+                )
+            ),
+            content_type="application/json",
+        )
+
+        assert r.status_code == 200
+        event = McpActivityEvent.objects.get(api_key=issued_key.api_key, primitive="tool", name="create_draft")
+        assert event.status == McpActivityEvent.Status.FAILED
+        assert "private legacy campaign content" not in repr(event.summary)
+
+    def test_organization_disabled_is_a_typed_denial_in_activity(self, client_with_token, issued_key):
+        from apps.mcp.models import McpActivityEvent, McpOrganizationConfig
+
+        McpOrganizationConfig.objects.create(
+            organization=issued_key.api_key.workspace.organization,
+            enabled=False,
+        )
+        r = client_with_token.post(
+            MCP_URL,
+            data=json.dumps(_tool_call_msg("list_accounts", {})),
+            content_type="application/json",
+        )
+
+        error = r.json()["result"]["structuredContent"]["error"]
+        assert error["code"] == "organization_disabled"
+        event = McpActivityEvent.objects.get(api_key=issued_key.api_key, primitive="tool", name="list_accounts")
+        assert event.status == McpActivityEvent.Status.DENIED
+
 
 # ===========================================================================
 # Finding #13 — batched messages each charge against the rate limit

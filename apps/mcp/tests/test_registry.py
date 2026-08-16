@@ -356,7 +356,13 @@ def test_require_tool_returns_safe_typed_unknown_error():
 def test_sdk_discovery_uses_canonical_output_schema_and_annotations():
     from apps.mcp.server import _list_tools_sync
 
-    access_token = SimpleNamespace(principal=SimpleNamespace(granted_scopes=frozenset({"mcp"})))
+    access_token = SimpleNamespace(
+        principal=SimpleNamespace(
+            credential_kind="oauth",
+            granted_scopes=frozenset({"mcp"}),
+            api_key_permissions=frozenset(),
+        )
+    )
     sdk_tool = next(tool for tool in _list_tools_sync(access_token) if tool.name == "list_accounts")
     payload = sdk_tool.model_dump(by_alias=True, exclude_none=True)
 
@@ -364,20 +370,21 @@ def test_sdk_discovery_uses_canonical_output_schema_and_annotations():
     assert payload["annotations"]["readOnlyHint"] is True
 
 
-def test_sdk_discovery_and_stale_calls_enforce_granular_oauth_scopes():
-    from apps.mcp.server import _call_tool_sync, _list_tools_sync
+def test_sdk_discovery_enforces_granular_oauth_scopes():
+    from apps.mcp.server import _list_tools_sync
 
     access_token = SimpleNamespace(
-        principal=SimpleNamespace(granted_scopes=frozenset({"mcp.read"})),
+        principal=SimpleNamespace(
+            credential_kind="oauth",
+            granted_scopes=frozenset({"mcp.read"}),
+            api_key_permissions=frozenset(),
+        ),
         django_request=object(),
     )
     discovered = {tool.name for tool in _list_tools_sync(access_token)}
 
     assert "list_accounts" in discovered
     assert "schedule_post" not in discovered
-    result = _call_tool_sync(access_token, "schedule_post", {})
-    assert result["isError"] is True
-    assert result["structuredContent"]["error"]["code"] == "forbidden"
 
 
 def test_legacy_batch_endpoint_is_isolated_in_legacy_module():
@@ -501,7 +508,13 @@ def test_legacy_domain_error_is_returned_as_safe_tool_result(monkeypatch):
         ),
     )
 
-    context = {"principal": SimpleNamespace(granted_scopes=frozenset({"mcp"}))}
+    context = {
+        "principal": SimpleNamespace(
+            credential_kind="oauth",
+            granted_scopes=frozenset({"mcp"}),
+            api_key_permissions=frozenset(),
+        )
+    }
     result = legacy._tools_call({"name": "example", "arguments": {}}, context)
 
     assert result["isError"] is True

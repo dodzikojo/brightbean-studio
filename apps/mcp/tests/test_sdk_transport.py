@@ -284,6 +284,30 @@ class TestSdkTransport:
         assert ApiKeyAuditLog.objects.filter(api_key=issued_key.api_key, action="mcp.initialize").count() == 1
         assert ApiKeyAuditLog.objects.filter(api_key=issued_key.api_key, action="mcp.ping").count() == 1
 
+    def test_failed_tool_call_records_redacted_activity_in_finally_path(self, issued_key):
+        from apps.mcp.models import McpActivityEvent
+        from apps.mcp.protocol import INVALID_PARAMS
+
+        with _test_client(_sdk_app(), base_url="https://testserver") as client:
+            response = client.post(
+                MCP_PATH,
+                headers=_auth_headers(issued_key.plaintext_token),
+                json=_rpc(
+                    "tools/call",
+                    {
+                        "name": "create_draft",
+                        "arguments": {"caption": "private campaign content"},
+                    },
+                ),
+            )
+
+        assert response.status_code == 200
+        assert response.json()["error"]["code"] == INVALID_PARAMS
+        event = McpActivityEvent.objects.get(api_key=issued_key.api_key, primitive="tool", name="create_draft")
+        assert event.status == McpActivityEvent.Status.FAILED
+        assert event.duration_ms >= 0
+        assert "private campaign content" not in repr(event.summary)
+
     def test_missing_bearer_returns_oauth_challenge_on_both_paths(self):
         with _test_client(_sdk_app(), base_url="https://testserver", follow_redirects=False) as client:
             for path in (MCP_PATH, MCP_PATH_SLASH):

@@ -14,6 +14,7 @@ or send unsolicited messages.
 from __future__ import annotations
 
 import json
+from time import perf_counter
 from typing import Any
 
 from django.http import HttpRequest, HttpResponse, JsonResponse
@@ -72,10 +73,10 @@ def _ping(params: dict, context: dict[str, Any]) -> dict:
 
 
 def _tools_list(params: dict, context: dict[str, Any]) -> dict:
-    from apps.oauth_server.scopes import scope_allows
+    from apps.mcp.policy import is_tool_discoverable
 
-    scopes = context["principal"].granted_scopes
-    return {"tools": [tool.to_mcp_dict() for tool in all_tools() if scope_allows(scopes, tool.required_scope)]}
+    principal = context["principal"]
+    return {"tools": [tool.to_mcp_dict() for tool in all_tools() if is_tool_discoverable(principal, tool)]}
 
 
 def _tools_call(params: dict, context: dict[str, Any]) -> dict:
@@ -87,10 +88,6 @@ def _tools_call(params: dict, context: dict[str, Any]) -> dict:
         raise JsonRpcError(INVALID_PARAMS, f"tools/call: unknown tool '{name}'")
     if not tool.enabled:
         return domain_error_result(tool_disabled_error(name))
-    from apps.oauth_server.scopes import scope_allows
-
-    if not scope_allows(context["principal"].granted_scopes, tool.required_scope):
-        return domain_error_result(DomainError("forbidden", "This credential cannot use that tool."))
     arguments = params.get("arguments") or {}
     if not isinstance(arguments, dict):
         raise JsonRpcError(INVALID_PARAMS, "tools/call: 'arguments' must be an object")
@@ -118,6 +115,16 @@ def _tools_call(params: dict, context: dict[str, Any]) -> dict:
             )
         else:
             tool_context = context
+        from apps.mcp.policy import evaluate_tool_policy, policy_error, requested_account_ids
+
+        decision = evaluate_tool_policy(
+            context["principal"],
+            tool,
+            workspace=tool_context.get("workspace"),
+            requested_account_ids=requested_account_ids(handler_arguments),
+        )
+        if not decision.allowed:
+            return domain_error_result(policy_error(decision, name))
         return tool.handler(handler_arguments, tool_context)
     except DomainError as exc:
         return domain_error_result(exc)
@@ -212,12 +219,18 @@ def mcp_endpoint(request: HttpRequest):
             # batch 100 calls into one HTTP request still consume 100
             # tokens, exactly as if they had sent 100 separate POSTs.
             enforce_http_rate_limits(request, is_write=True, include_workspace=False)
+            started_at = perf_counter()
             r = dispatch(msg, context, METHODS)
             # Codex fix: always audit, even notifications (r is None),
             # and derive the status code from the dispatch envelope so
             # JSON-RPC errors don't masquerade as successes in the log.
             audit_status = _status_for_response(r)
-            _log_mcp_audit(request, msg, status_code=audit_status)
+            _log_mcp_audit(
+                request,
+                msg,
+                status_code=audit_status,
+                duration_ms=int((perf_counter() - started_at) * 1000),
+            )
             if r is not None:
                 responses.append(r)
         if not responses:
@@ -227,9 +240,15 @@ def mcp_endpoint(request: HttpRequest):
     # Single message.
     if isinstance(body, dict):
         enforce_http_rate_limits(request, is_write=True, include_workspace=False)
+        started_at = perf_counter()
         response = dispatch(body, context, METHODS)
         audit_status = _status_for_response(response)
-        _log_mcp_audit(request, body, status_code=audit_status)
+        _log_mcp_audit(
+            request,
+            body,
+            status_code=audit_status,
+            duration_ms=int((perf_counter() - started_at) * 1000),
+        )
         if response is None:
             # Notification — fire-and-forget per JSON-RPC.
             return HttpResponse(status=202)
@@ -273,6 +292,8 @@ def _status_for_response(response: dict | None) -> int:
                     return 400
                 return {
                     "forbidden": 403,
+                    "organization_disabled": 403,
+                    "server_disabled": 503,
                     "workspace_required": 422,
                     "invalid_request": 422,
                     "rate_limited": 429,
@@ -297,7 +318,7 @@ def _status_for_response(response: dict | None) -> int:
     }.get(code, 400)
 
 
-def _log_mcp_audit(request: HttpRequest, msg: dict, *, status_code: int) -> None:
+def _log_mcp_audit(request: HttpRequest, msg: dict, *, status_code: int, duration_ms: int) -> None:
     """Translate an MCP method into a coarse audit-log action label.
 
     For ``tools/call`` we drill in to ``params.name`` so a forensic
@@ -311,3 +332,18 @@ def _log_mcp_audit(request: HttpRequest, msg: dict, *, status_code: int) -> None
         if isinstance(tool_name, str):
             action = f"mcp.tools/call:{tool_name}"
     log_audit_entry(request, action=action, target_id=None, status_code=status_code)
+    raw_params = msg.get("params") if isinstance(msg, dict) else None
+    params = raw_params if isinstance(raw_params, dict) else {}
+    protocol_version = params.get("protocolVersion") if isinstance(params.get("protocolVersion"), str) else ""
+    if not protocol_version:
+        protocol_version = request.META.get("HTTP_MCP_PROTOCOL_VERSION", "")
+    from apps.mcp.activity import record_activity
+
+    if isinstance(msg, dict):
+        record_activity(
+            request.mcp_principal,  # type: ignore[attr-defined]
+            msg,
+            status_code=status_code,
+            duration_ms=duration_ms,
+            protocol_version=protocol_version,
+        )

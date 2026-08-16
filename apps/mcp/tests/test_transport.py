@@ -19,6 +19,7 @@ from apps.api_keys import services
 from apps.composer.models import PlatformPost, Post
 from apps.mcp.protocol import (
     INVALID_PARAMS,
+    INVALID_REQUEST,
     METHOD_NOT_FOUND,
     PARSE_ERROR,
 )
@@ -243,6 +244,11 @@ class TestProtocolMechanics:
         r = client_with_token.post(MCP_URL, data="[]", content_type="application/json")
         assert r.status_code == 400
 
+    def test_non_object_batch_member_is_rejected_without_breaking_activity_capture(self, client_with_token):
+        status, body = _post(client_with_token, [42])
+        assert status == 200
+        assert body[0]["error"]["code"] == INVALID_REQUEST
+
 
 # ---------------------------------------------------------------------------
 # Tools — list + dispatch
@@ -337,8 +343,9 @@ class TestCreateDraftTool:
                 },
             ),
         )
-        assert body["error"]["code"] == INVALID_PARAMS
-        assert "allowlist" in body["error"]["message"].lower()
+        error = body["result"]["structuredContent"]["error"]
+        assert error["code"] == "forbidden"
+        assert error["message"] == "This credential cannot use that tool."
         assert Post.objects.count() == 0
 
     def test_missing_required_arguments_returns_invalid_params(self, client_with_token):
@@ -798,8 +805,9 @@ class TestPermissionGating:
                 },
             ),
         )
-        assert body["error"]["code"] == INVALID_PARAMS
-        assert "permission denied" in body["error"]["message"].lower()
+        error = body["result"]["structuredContent"]["error"]
+        assert error["code"] == "forbidden"
+        assert error["message"] == "This credential cannot use that tool."
 
     def test_read_only_key_can_still_list_accounts(self, read_only_client, social_account):
         """list_accounts has no permission requirement — it's pure scope echo.
@@ -942,8 +950,9 @@ class TestAnalyticsTools:
                 {"name": "get_account_analytics", "arguments": {"account_id": str(second_account.id)}},
             ),
         )
-        assert body["error"]["code"] == INVALID_PARAMS
-        assert "allowlist" in body["error"]["message"].lower()
+        error = body["result"]["structuredContent"]["error"]
+        assert error["code"] == "forbidden"
+        assert error["message"] == "This credential cannot use that tool."
 
     def test_get_account_analytics_rejects_invalid_days(self, analytics_client, instagram_account):
         status, body = _post(
@@ -1052,8 +1061,9 @@ class TestAnalyticsPermissionGate:
                 {"name": "get_account_analytics", "arguments": {"account_id": str(instagram_account.id)}},
             ),
         )
-        assert body["error"]["code"] == INVALID_PARAMS
-        assert "view_analytics" in body["error"]["message"].lower()
+        error = body["result"]["structuredContent"]["error"]
+        assert error["code"] == "forbidden"
+        assert error["message"] == "This credential cannot use that tool."
 
     def test_get_post_analytics_denied_without_view_analytics(
         self, no_view_analytics_client, workspace, instagram_account
@@ -1064,5 +1074,6 @@ class TestAnalyticsPermissionGate:
             no_view_analytics_client,
             _rpc("tools/call", {"name": "get_post_analytics", "arguments": {"post_id": str(post.id)}}),
         )
-        assert body["error"]["code"] == INVALID_PARAMS
-        assert "view_analytics" in body["error"]["message"].lower()
+        error = body["result"]["structuredContent"]["error"]
+        assert error["code"] == "forbidden"
+        assert error["message"] == "This credential cannot use that tool."

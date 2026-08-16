@@ -7,6 +7,7 @@ from collections import deque
 from contextvars import ContextVar
 from dataclasses import dataclass
 from io import BytesIO
+from time import perf_counter
 from typing import Any
 
 import mcp.types as types
@@ -90,6 +91,7 @@ class RequestBoundaryMiddleware:
             return
 
         body = _request_body(scope)
+        started_at = perf_counter()
         async with ThreadSensitiveContext():
             state_token = None
             try:
@@ -116,7 +118,12 @@ class RequestBoundaryMiddleware:
                         if exc.status_code != 429:
                             raise
                         await _send_rate_limit(scope, send, exc.message)
-                        await _audit(access_token, body, status_code=429)
+                        await _audit(
+                            access_token,
+                            body,
+                            status_code=429,
+                            duration_ms=int((perf_counter() - started_at) * 1000),
+                        )
                         return
 
                 response_status = 500
@@ -141,6 +148,7 @@ class RequestBoundaryMiddleware:
                         access_token,
                         body,
                         status_code=_synthetic_status(response_status, captured_body),
+                        duration_ms=int((perf_counter() - started_at) * 1000),
                     )
             finally:
                 if state_token is not None:
@@ -266,7 +274,7 @@ def _authenticated_context(ctx: ServerRequestContext) -> BrightBeanAccessToken:
 
 
 def _list_tools_sync(access_token: BrightBeanAccessToken) -> list[types.Tool]:
-    from apps.oauth_server.scopes import scope_allows
+    from apps.mcp.policy import is_tool_discoverable
 
     return [
         types.Tool(
@@ -283,7 +291,7 @@ def _list_tools_sync(access_token: BrightBeanAccessToken) -> list[types.Tool]:
             ),
         )
         for tool in all_tools()
-        if scope_allows(access_token.principal.granted_scopes, tool.required_scope)
+        if is_tool_discoverable(access_token.principal, tool)
     ]
 
 
@@ -294,10 +302,6 @@ def _call_tool_sync(access_token: BrightBeanAccessToken, name: str, arguments: d
         raise MCPError(code=INVALID_PARAMS, message=f"tools/call: unknown tool '{name}'")
     if not tool.enabled:
         return domain_error_result(tool_disabled_error(name))
-    from apps.oauth_server.scopes import scope_allows
-
-    if not scope_allows(access_token.principal.granted_scopes, tool.required_scope):
-        return domain_error_result(DomainError("forbidden", "This credential cannot use that tool."))
 
     try:
         _validate_tool_arguments(tool.input_schema, arguments)
@@ -314,6 +318,16 @@ def _call_tool_sync(access_token: BrightBeanAccessToken, name: str, arguments: d
             )
         else:
             context = {"principal": access_token.principal, "request": request}
+        from apps.mcp.policy import evaluate_tool_policy, policy_error, requested_account_ids
+
+        decision = evaluate_tool_policy(
+            access_token.principal,
+            tool,
+            workspace=context.get("workspace"),
+            requested_account_ids=requested_account_ids(handler_arguments),
+        )
+        if not decision.allowed:
+            return domain_error_result(policy_error(decision, name))
         result = tool.handler(
             handler_arguments,
             context,
@@ -483,13 +497,39 @@ async def _send_rate_limit(scope, send, message: str) -> None:
     await JSONResponse(payload, status_code=429, headers=headers)(scope, _replay_body(b""), send)
 
 
-async def _audit(access_token: BrightBeanAccessToken, request_body: bytes, *, status_code: int) -> None:
+async def _audit(
+    access_token: BrightBeanAccessToken,
+    request_body: bytes,
+    *,
+    status_code: int,
+    duration_ms: int,
+) -> None:
     action = _audit_action(request_body)
     await sync_to_async(log_audit_entry, thread_sensitive=True)(
         access_token.django_request,
         action=action,
         target_id=None,
         status_code=status_code,
+    )
+    try:
+        message = json.loads(request_body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return
+    if not isinstance(message, dict):
+        return
+    raw_params = message.get("params")
+    params = raw_params if isinstance(raw_params, dict) else {}
+    protocol_version = params.get("protocolVersion") if isinstance(params.get("protocolVersion"), str) else ""
+    if not protocol_version:
+        protocol_version = access_token.django_request.META.get("HTTP_MCP_PROTOCOL_VERSION", "")
+    from apps.mcp.activity import record_activity
+
+    await sync_to_async(record_activity, thread_sensitive=True)(
+        access_token.principal,
+        message,
+        status_code=status_code,
+        duration_ms=duration_ms,
+        protocol_version=protocol_version,
     )
 
 
