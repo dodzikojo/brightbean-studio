@@ -144,6 +144,19 @@ def test_media_and_legacy_analytics_invocation_routes_through_focused_modules(mo
     assert analytics_tool.handler({}, {}) == analytics_result
 
 
+def test_media_implementations_are_not_retained_in_legacy_handler_module():
+    from apps.mcp import handlers
+
+    legacy_names = {
+        "_search_media",
+        "_get_media",
+        "_upload_media",
+        "_request_media_upload",
+        "_finalize_media_upload",
+    }
+    assert legacy_names.isdisjoint(vars(handlers))
+
+
 def test_existing_tools_have_shape_specific_output_schemas():
     tools = {tool.name: tool for tool in all_tools()}
 

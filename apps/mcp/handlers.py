@@ -27,6 +27,7 @@ from apps.api.limits import check_platform_quota
 from apps.api.schemas import PostResponse
 from apps.composer.models import PlatformPost, Post
 from apps.composer.services import create_post, transition_platform_post
+from apps.mcp.media import MCP_MEDIA_LIMIT_DEFAULT, MCP_MEDIA_LIMIT_MAX
 from apps.mcp.protocol import INVALID_PARAMS, JsonRpcError
 from apps.mcp.results import decode_page_cursor, encode_page_cursor, success_result
 from apps.mcp.tools import Tool, register_tool
@@ -87,33 +88,6 @@ def _resolve_allowed_account(workspace_context, social_account_id_str: str) -> S
         )
     except SocialAccount.DoesNotExist as exc:
         raise JsonRpcError(INVALID_PARAMS, "social_account_id is not in this API key's allowlist") from exc
-
-
-def _resolve_media_folder(workspace, args: dict):
-    """Resolve an optional ``folder_id`` arg to a MediaFolder in the workspace's org.
-
-    Shared by the upload tools so they scope folders identically.
-    """
-    folder_id_raw = args.get("folder_id")
-    if not folder_id_raw:
-        return None
-    from apps.media_library.models import MediaFolder
-
-    try:
-        return MediaFolder.objects.get(
-            id=_parse_uuid(folder_id_raw, "folder_id"),
-            organization=workspace.organization,
-        )
-    except MediaFolder.DoesNotExist as exc:
-        raise JsonRpcError(INVALID_PARAMS, "folder_id not found in this organization") from exc
-
-
-def _parse_media_tags(args: dict) -> list:
-    """Validate an optional ``tags`` arg as a list of strings."""
-    tags = args.get("tags") or []
-    if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
-        raise JsonRpcError(INVALID_PARAMS, "tags must be a list of strings")
-    return tags
 
 
 def _can_view_internal_notes(context: dict[str, Any]) -> bool:
@@ -652,83 +626,8 @@ register_tool(
 
 
 # ---------------------------------------------------------------------------
-# Media tools: search_media, get_media, upload_media (Gap 1 + 1b)
+# Media tool schemas. Implementations live in ``apps.mcp.media``.
 # ---------------------------------------------------------------------------
-
-
-_MCP_MEDIA_LIMIT_DEFAULT = 20
-_MCP_MEDIA_LIMIT_MAX = 100
-# JSON-RPC payload sanity cap. Kept below Django's DATA_UPLOAD_MAX_MEMORY_SIZE
-# default of 2.5 MB so this check fires with a structured JSON-RPC error
-# before Django's RequestDataTooBig fires with an opaque HTML 500.
-# For anything larger, agents must use POST /api/v1/media/ over REST.
-_MCP_UPLOAD_MAX_BYTES = 1024 * 1024  # 1 MB raw
-
-
-def _visible_media_qs(api_key):
-    from apps.media_library.models import MediaAsset
-
-    workspace = api_key.workspace
-    return MediaAsset.objects.for_workspace_with_shared(
-        workspace_id=workspace.id,
-        organization_id=workspace.organization_id,
-    )
-
-
-def _serialize_media(asset) -> dict:
-    """Return the same shape as ``GET /api/v1/media/{id}``."""
-    from apps.api.schemas import MediaAssetResponse
-
-    return MediaAssetResponse.from_asset(asset, last_used_at=getattr(asset, "last_used_at", None)).model_dump(
-        mode="json"
-    )
-
-
-def _search_media(args: dict, context: dict[str, Any]) -> dict:
-    from apps.media_library.models import MediaAsset
-
-    api_key = context["api_key"]
-    query = args.get("query") or None
-    media_type = args.get("media_type") or None
-    tags = args.get("tags") or []
-    folder_id_raw = args.get("folder_id") or None
-    is_starred = args.get("is_starred")
-    limit = int(args.get("limit") or _MCP_MEDIA_LIMIT_DEFAULT)
-    if limit < 1 or limit > _MCP_MEDIA_LIMIT_MAX:
-        raise JsonRpcError(INVALID_PARAMS, f"limit must be between 1 and {_MCP_MEDIA_LIMIT_MAX}")
-
-    qs = MediaAsset.objects.with_last_used_at(_visible_media_qs(api_key))
-    # Default to ``completed`` so agents never reference half-processed
-    # assets via MCP. Mirrors the REST default.
-    qs = qs.filter(processing_status="completed")
-    if media_type:
-        qs = qs.filter(media_type=media_type)
-    if folder_id_raw:
-        qs = qs.filter(folder_id=_parse_uuid(folder_id_raw, "folder_id"))
-    if is_starred is not None:
-        qs = qs.filter(is_starred=bool(is_starred))
-    if isinstance(tags, list):
-        for tag in tags:
-            if not isinstance(tag, str):
-                raise JsonRpcError(INVALID_PARAMS, "tags must be a list of strings")
-            qs = qs.filter(tags__contains=[tag])
-    if query:
-        qs = MediaAsset.objects.search(query, queryset=qs)
-
-    try:
-        offset = decode_page_cursor(args.get("cursor"))
-    except ValueError as exc:
-        raise JsonRpcError(INVALID_PARAMS, "cursor is invalid") from exc
-    page = list(qs.order_by("-created_at", "id")[offset : offset + limit + 1])
-    has_more = len(page) > limit
-    return _wrap_text(
-        {
-            "items": [_serialize_media(a) for a in page[:limit]],
-            "limit": limit,
-            "next_cursor": encode_page_cursor(offset + limit) if has_more else None,
-        }
-    )
-
 
 register_tool(
     Tool(
@@ -759,8 +658,8 @@ register_tool(
                 "limit": {
                     "type": "integer",
                     "minimum": 1,
-                    "maximum": _MCP_MEDIA_LIMIT_MAX,
-                    "default": _MCP_MEDIA_LIMIT_DEFAULT,
+                    "maximum": MCP_MEDIA_LIMIT_MAX,
+                    "default": MCP_MEDIA_LIMIT_DEFAULT,
                 },
                 "cursor": {"type": "string", "description": "Opaque cursor returned by the previous page."},
             },
@@ -769,21 +668,6 @@ register_tool(
         handler=_focused_handler("media", "search_media"),
     )
 )
-
-
-def _get_media(args: dict, context: dict[str, Any]) -> dict:
-    from apps.media_library.models import MediaAsset
-
-    if "media_id" not in args:
-        raise JsonRpcError(INVALID_PARAMS, "media_id is required")
-    media_id = _parse_uuid(args["media_id"], "media_id")
-    api_key = context["api_key"]
-    qs = MediaAsset.objects.with_last_used_at(_visible_media_qs(api_key))
-    try:
-        asset = qs.get(id=media_id)
-    except MediaAsset.DoesNotExist as exc:
-        raise JsonRpcError(INVALID_PARAMS, "Media asset not found") from exc
-    return _wrap_text(_serialize_media(asset))
 
 
 register_tool(
@@ -805,79 +689,6 @@ register_tool(
 )
 
 
-def _upload_media(args: dict, context: dict[str, Any]) -> dict:
-    """MCP-side upload accepts base64 content (≤5 MB).
-
-    For larger files agents must use ``POST /api/v1/media/`` over REST —
-    multipart can't ride a JSON-RPC envelope cleanly.
-    """
-    import base64
-    import binascii
-
-    from django.core.exceptions import ValidationError
-    from django.core.files.uploadedfile import SimpleUploadedFile
-
-    from apps.media_library.quotas import StorageQuotaExceededError
-    from apps.media_library.services import create_asset as media_create_asset
-
-    _require_perm(context, "upload_media")
-    if "filename" not in args:
-        raise JsonRpcError(INVALID_PARAMS, "filename is required")
-    if "content_base64" not in args:
-        raise JsonRpcError(INVALID_PARAMS, "content_base64 is required")
-
-    filename = args["filename"]
-    if not isinstance(filename, str) or not filename.strip():
-        raise JsonRpcError(INVALID_PARAMS, "filename must be a non-empty string")
-
-    try:
-        raw = base64.b64decode(args["content_base64"], validate=True)
-    except (ValueError, binascii.Error) as exc:
-        raise JsonRpcError(INVALID_PARAMS, "content_base64 is not valid base64") from exc
-
-    if len(raw) > _MCP_UPLOAD_MAX_BYTES:
-        raise JsonRpcError(
-            INVALID_PARAMS,
-            (
-                f"MCP upload limit is {_MCP_UPLOAD_MAX_BYTES // 1024 // 1024} MB. "
-                "Use POST /api/v1/media/ (multipart) for larger files."
-            ),
-        )
-
-    content_type = args.get("content_type") or "application/octet-stream"
-    uploaded = SimpleUploadedFile(name=filename, content=raw, content_type=content_type)
-
-    api_key = context["api_key"]
-    workspace = api_key.workspace
-    folder = _resolve_media_folder(workspace, args)
-    tags = _parse_media_tags(args)
-
-    try:
-        asset = media_create_asset(
-            organization=workspace.organization,
-            workspace=workspace,
-            uploaded_file=uploaded,
-            uploaded_by=api_key.issued_by if api_key.issued_by_id else None,
-            folder=folder,
-            alt_text=args.get("alt_text", "") or "",
-            title=args.get("title", "") or "",
-            tags=tags,
-        )
-    except StorageQuotaExceededError as exc:
-        raise JsonRpcError(
-            INVALID_PARAMS,
-            f"Storage quota exceeded: used={exc.used} limit={exc.limit} attempted={exc.attempted}",
-        ) from exc
-    except ValidationError as exc:
-        raise JsonRpcError(INVALID_PARAMS, "; ".join(getattr(exc, "messages", [str(exc)]))) from exc
-
-    from apps.media_library.tasks import process_media_asset
-
-    process_media_asset(str(asset.id))
-
-    return _wrap_text(_serialize_media(asset))
-
-
 register_tool(
     Tool(
         name="upload_media",
@@ -894,7 +705,7 @@ register_tool(
                 "filename": {"type": "string", "maxLength": 255},
                 "content_base64": {
                     "type": "string",
-                    "description": "Base64-encoded file content. Decoded size must be ≤5 MB.",
+                    "description": "Base64-encoded file content. Decoded size must be ≤1 MB.",
                 },
                 "content_type": {"type": "string"},
                 "alt_text": {"type": "string", "maxLength": 2000},
@@ -921,147 +732,6 @@ register_tool(
 # the server validates the stored object and registers the asset. Because upload
 # and the later create_draft both ride the same OAuth connection, they resolve
 # the same workspace — the media is always found.
-
-_MCP_PRESIGN_LOCAL_MODE_MSG = (
-    "Presigned upload requires S3/R2 storage. In local mode use upload_media "
-    "(base64, ≤1 MB) or POST /api/v1/media/ (multipart)."
-)
-
-
-def _request_media_upload(args: dict, context: dict[str, Any]) -> dict:
-    from apps.media_library.services import create_pending_upload
-    from apps.media_library.storage import is_s3_backend
-    from apps.media_library.validators import ALL_ALLOWED_MIMES
-
-    _require_perm(context, "upload_media")
-    if not is_s3_backend():
-        raise JsonRpcError(INVALID_PARAMS, _MCP_PRESIGN_LOCAL_MODE_MSG)
-
-    filename = args.get("filename")
-    if not isinstance(filename, str) or not filename.strip():
-        raise JsonRpcError(INVALID_PARAMS, "filename must be a non-empty string")
-    # media_type is constrained to the enum by the input schema. content_type is
-    # pinned into the presigned POST policy and becomes the stored object's
-    # Content-Type, so constrain it to the upload allowlist (or octet-stream):
-    # gives a clear up-front error instead of an opaque storage rejection, and
-    # stops a caller from pinning a renderable type (e.g. text/html).
-    media_type = args["media_type"]
-    content_type = args.get("content_type") or "application/octet-stream"
-    if content_type != "application/octet-stream" and content_type not in ALL_ALLOWED_MIMES:
-        raise JsonRpcError(
-            INVALID_PARAMS,
-            "content_type must be one of " + ", ".join(sorted(ALL_ALLOWED_MIMES)) + " (or omitted).",
-        )
-
-    api_key = context["api_key"]
-    workspace = api_key.workspace
-    pending, presigned = create_pending_upload(
-        organization=workspace.organization,
-        workspace=workspace,
-        created_by=api_key.issued_by if api_key.issued_by_id else None,
-        declared_filename=filename,
-        content_type=content_type,
-        requested_media_type=media_type,
-    )
-    return _wrap_text(
-        {
-            "upload_id": str(pending.id),
-            "method": presigned["method"],
-            "url": presigned["url"],
-            "fields": presigned["fields"],
-            "max_bytes": pending.max_bytes,
-            "expires_at": pending.expires_at.isoformat(),
-            "instructions": (
-                "Upload the raw bytes to 'url' as a multipart/form-data POST: send every "
-                "key/value in 'fields' as form fields, then a final 'file' field holding the "
-                "binary body. Then call finalize_media_upload with this upload_id."
-            ),
-        }
-    )
-
-
-def _finalize_media_upload(args: dict, context: dict[str, Any]) -> dict:
-    from django.core.exceptions import ValidationError
-    from django.db import transaction
-    from django.utils import timezone
-
-    from apps.media_library.models import MediaAsset, PendingUpload
-    from apps.media_library.quotas import StorageQuotaExceededError
-    from apps.media_library.services import inspect_uploaded_object, register_uploaded_asset
-    from apps.media_library.storage import is_s3_backend
-    from apps.media_library.tasks import process_media_asset
-
-    _require_perm(context, "upload_media")
-    if not is_s3_backend():
-        raise JsonRpcError(INVALID_PARAMS, _MCP_PRESIGN_LOCAL_MODE_MSG)
-
-    upload_id = _parse_uuid(args.get("upload_id"), "upload_id")
-    api_key = context["api_key"]
-    workspace = api_key.workspace
-
-    # Validate caller args up front — no lock, no remote I/O.
-    folder = _resolve_media_folder(workspace, args)
-    tags = _parse_media_tags(args)
-
-    # Tenant-scoped fetch (no lock) for the fast replay path and to read the key.
-    try:
-        pending = PendingUpload.objects.get(id=upload_id, workspace_id=workspace.id)
-    except PendingUpload.DoesNotExist as exc:
-        raise JsonRpcError(INVALID_PARAMS, "Upload not found") from exc
-
-    if pending.finalized_at:
-        # Idempotent replay — return the existing asset, never mint a second.
-        if pending.media_asset_id is None:
-            # Finalized earlier but the asset was since deleted; don't re-create.
-            raise JsonRpcError(INVALID_PARAMS, "This upload was already finalized; its media asset no longer exists.")
-        asset = pending.media_asset
-    else:
-        if pending.expires_at < timezone.now():
-            raise JsonRpcError(INVALID_PARAMS, "This upload request has expired; request a new one.")
-        # Inspect the stored object (HEAD + range-GET) OUTSIDE the row lock so the
-        # lock never spans remote round-trips.
-        try:
-            inspected = inspect_uploaded_object(pending)
-        except FileNotFoundError as exc:
-            raise JsonRpcError(INVALID_PARAMS, str(exc)) from exc
-        except StorageQuotaExceededError as exc:
-            raise JsonRpcError(
-                INVALID_PARAMS,
-                f"Storage quota exceeded: used={exc.used} limit={exc.limit} attempted={exc.attempted}",
-            ) from exc
-        except ValidationError as exc:
-            raise JsonRpcError(INVALID_PARAMS, "; ".join(getattr(exc, "messages", [str(exc)]))) from exc
-
-        # Create + mark finalized under a short row lock, re-checking idempotency
-        # so a finalize that won the race while we inspected still wins.
-        with transaction.atomic():
-            locked = PendingUpload.objects.select_for_update().get(id=upload_id, workspace_id=workspace.id)
-            if locked.finalized_at and locked.media_asset_id:
-                asset = locked.media_asset
-            else:
-                asset = register_uploaded_asset(
-                    pending=locked,
-                    inspected=inspected,
-                    uploaded_by=api_key.issued_by if api_key.issued_by_id else None,
-                    folder=folder,
-                    alt_text=args.get("alt_text", "") or "",
-                    title=args.get("title", "") or "",
-                    tags=tags,
-                )
-                locked.finalized_at = timezone.now()
-                locked.media_asset = asset
-                locked.save(update_fields=["finalized_at", "media_asset"])
-
-    # ``asset`` is non-None in both branches above (the replay branch is guarded
-    # by ``media_asset_id``); assert it so mypy narrows the nullable FK.
-    assert asset is not None
-
-    # Ensure processing is queued — for a fresh asset, or to self-heal a replay
-    # whose original enqueue was lost (asset still stuck at 'pending').
-    if asset.processing_status == MediaAsset.ProcessingStatus.PENDING:
-        process_media_asset(str(asset.id))
-    return _wrap_text(_serialize_media(asset))
-
 
 register_tool(
     Tool(
