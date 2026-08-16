@@ -65,6 +65,21 @@ def evaluate_tool_policy(
     requested_account_ids: set[str | UUID] | frozenset[str | UUID] = frozenset(),
 ) -> McpPolicyDecision:
     """Evaluate policy in the documented precedence order without side effects."""
+    authorized_workspaces = getattr(principal, "authorized_workspaces", ())
+    if workspace is None and not tool.workspace_scoped and authorized_workspaces:
+        decisions = [
+            evaluate_tool_policy(
+                principal,
+                tool,
+                workspace=item.workspace,
+                requested_account_ids=requested_account_ids,
+            )
+            for item in authorized_workspaces
+        ]
+        if any(decision.allowed for decision in decisions):
+            return McpPolicyDecision(True)
+        return decisions[0]
+
     if not settings.MCP_SERVER_ENABLED:
         return _deny("server_disabled", "infrastructure")
 

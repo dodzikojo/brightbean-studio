@@ -2680,65 +2680,22 @@ def idea_create_post(request, workspace_id, idea_id):
         id=idea_id,
     )
 
-    tags = []
-    if isinstance(idea.tags, list):
-        tags = [tag.strip() for tag in idea.tags if isinstance(tag, str) and tag.strip()]
-
-    ordered_media_asset_ids = []
-    seen_media_ids = set()
-    for attachment in idea.media_attachments.all():
-        if not attachment.media_asset_id:
-            continue
-        media_id = str(attachment.media_asset_id)
-        if media_id in seen_media_ids:
-            continue
-        seen_media_ids.add(media_id)
-        ordered_media_asset_ids.append(media_id)
-
-    # Legacy fallback: old ideas may only have the single media pointer set.
-    if not ordered_media_asset_ids and idea.media_asset_id:
-        ordered_media_asset_ids.append(str(idea.media_asset_id))
-
     connected_accounts = list(
         SocialAccount.objects.for_workspace(workspace.id)
         .filter(connection_status=SocialAccount.ConnectionStatus.CONNECTED)
         .order_by("platform", "account_name", "id")
     )
+    from apps.composer.content_services import convert_idea_to_draft
 
-    with transaction.atomic():
-        post = Post.objects.create(
-            workspace=workspace,
+    try:
+        post = convert_idea_to_draft(
+            idea,
             author=request.user,
-            title=idea.title or "",
-            caption=idea.description or "",
-            tags=tags,
+            social_accounts=connected_accounts,
+            allow_reconvert=True,
         )
-
-        if ordered_media_asset_ids:
-            PostMedia.objects.bulk_create(
-                [
-                    PostMedia(
-                        post=post,
-                        media_asset_id=asset_id,
-                        position=index,
-                    )
-                    for index, asset_id in enumerate(ordered_media_asset_ids)
-                ]
-            )
-
-        if connected_accounts:
-            PlatformPost.objects.bulk_create(
-                [
-                    PlatformPost(
-                        post=post,
-                        social_account=account,
-                    )
-                    for account in connected_accounts
-                ]
-            )
-
-        idea.post = post
-        idea.save(update_fields=["post", "updated_at"])
+    except ValueError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=409)
 
     from django.urls import reverse
 

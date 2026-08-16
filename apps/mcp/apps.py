@@ -19,7 +19,7 @@ class McpConfig(AppConfig):
         # first. Import-side-effects only.
         from django.db.models.signals import post_migrate
 
-        from apps.mcp import handlers  # noqa: F401
+        from apps.mcp import content, context, handlers  # noqa: F401
 
         post_migrate.connect(self._register_activity_sweep, sender=self)
 

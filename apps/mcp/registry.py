@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
@@ -110,11 +112,15 @@ registry = ToolRegistry()
 _READ_TOOLS = frozenset(
     {
         "get_account_analytics",
+        "get_account_health",
         "get_media",
         "get_post",
         "get_post_analytics",
+        "get_workspace_context",
         "list_accounts",
+        "list_ideas",
         "list_posts",
+        "list_workspaces",
         "search_media",
     }
 )
@@ -126,12 +132,29 @@ _PUBLISH_PERMISSIONS = {
 }
 _CONTENT_TOOLS = frozenset(
     {
+        "clone_post",
+        "convert_idea_to_draft",
         "create_draft",
+        "create_idea",
         "finalize_media_upload",
         "request_media_upload",
+        "update_draft",
+        "update_idea",
         "upload_media",
     }
 )
+_CONTENT_PERMISSIONS = {
+    "clone_post": ("create_posts",),
+    "convert_idea_to_draft": ("create_posts",),
+    "create_draft": ("create_posts",),
+    "create_idea": ("create_posts",),
+    "finalize_media_upload": ("upload_media",),
+    "request_media_upload": ("upload_media",),
+    "update_draft": ("create_posts",),
+    "update_idea": ("create_posts",),
+    "upload_media": ("upload_media",),
+}
+_GLOBAL_TOOLS = frozenset({"list_workspaces"})
 
 _CONFIRMATION_PREVIEW_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -194,6 +217,79 @@ class _RequestMediaUploadOutput(_StrictOutput):
     instructions: str
 
 
+class _WorkspaceSummary(_StrictOutput):
+    id: UUID
+    name: str
+    organization_id: UUID
+    role: str
+    timezone: str
+
+
+class _ListWorkspacesOutput(_StrictOutput):
+    workspaces: list[_WorkspaceSummary]
+
+
+class _BrandColors(_StrictOutput):
+    primary: str
+    secondary: str
+
+
+class _NamedColor(_StrictOutput):
+    id: UUID
+    name: str
+    color: str
+
+
+class _NamedItem(_StrictOutput):
+    id: UUID
+    name: str
+
+
+class _TemplateSummary(_NamedItem):
+    description: str
+
+
+class _WorkspaceContextOutput(_StrictOutput):
+    id: UUID
+    name: str
+    description: str
+    timezone: str
+    brand_colors: _BrandColors
+    default_hashtags: list[str]
+    approval_policy: str
+    categories: list[_NamedColor]
+    tags: list[_NamedItem]
+    templates: list[_TemplateSummary]
+
+
+class _AccountHealthOutput(AccountSummary):
+    healthy: bool
+    needs_reconnect: bool
+    issues: list[str]
+    last_health_check_at: datetime | None
+    reconnect_path: str
+
+
+class _IdeaOutput(_StrictOutput):
+    id: UUID
+    workspace_id: UUID
+    title: str
+    description: str
+    tags: list[str]
+    status: str
+    group_id: UUID | None
+    media_asset_id: UUID | None
+    post_id: UUID | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class _ListIdeasOutput(_StrictOutput):
+    ideas: list[_IdeaOutput]
+    limit: int
+    next_cursor: str | None
+
+
 def _typed_output_schema(model: type[BaseModel]) -> dict[str, Any]:
     """Advertise one exact success shape plus BrightBean's common error shape."""
     success_schema = model.model_json_schema(mode="serialization")
@@ -208,6 +304,12 @@ def _typed_output_schema(model: type[BaseModel]) -> dict[str, Any]:
 
 
 _OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
+    "list_workspaces": _typed_output_schema(_ListWorkspacesOutput),
+    "get_workspace_context": _typed_output_schema(_WorkspaceContextOutput),
+    "get_account_health": _typed_output_schema(_AccountHealthOutput),
+    "list_ideas": _typed_output_schema(_ListIdeasOutput),
+    "create_idea": _typed_output_schema(_IdeaOutput),
+    "update_idea": _typed_output_schema(_IdeaOutput),
     "list_accounts": _typed_output_schema(_ListAccountsOutput),
     "list_posts": _typed_output_schema(_ListPostsOutput),
     "search_media": _typed_output_schema(_SearchMediaOutput),
@@ -217,10 +319,13 @@ _OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
 }
 for _post_tool in {
     "cancel_post",
+    "clone_post",
+    "convert_idea_to_draft",
     "create_draft",
     "get_post",
     "schedule_draft",
     "schedule_post",
+    "update_draft",
 }:
     _OUTPUT_SCHEMAS[_post_tool] = _typed_output_schema(PostResponse)
 for _media_tool in {"finalize_media_upload", "get_media", "upload_media"}:
@@ -230,17 +335,26 @@ for _media_tool in {"finalize_media_upload", "get_media", "upload_media"}:
 def _with_builtin_metadata(tool: Tool) -> Tool:
     """Enrich the original surface while handlers migrate incrementally."""
     properties = dict(tool.input_schema.get("properties", {}))
-    properties["workspace_id"] = {
-        "type": "string",
-        "format": "uuid",
-        "description": "Explicit workspace for OAuth callers; optional for a pinned API key.",
-    }
+    workspace_scoped = tool.name not in _GLOBAL_TOOLS
+    if workspace_scoped:
+        properties["workspace_id"] = {
+            "type": "string",
+            "format": "uuid",
+            "description": "Explicit workspace for OAuth callers; optional for a pinned API key.",
+        }
     input_schema = {**tool.input_schema, "properties": properties}
+    output_schema = _OUTPUT_SCHEMAS.get(tool.name, tool.output_schema)
+    if "oneOf" not in output_schema:
+        success_schema = {**output_schema, "not": {"required": ["error"]}}
+        output_schema = {
+            "type": "object",
+            "oneOf": [success_schema, DOMAIN_ERROR_OUTPUT_SCHEMA],
+        }
     tool = replace(
         tool,
         input_schema=input_schema,
-        output_schema=_OUTPUT_SCHEMAS.get(tool.name, tool.output_schema),
-        workspace_scoped=True,
+        output_schema=output_schema,
+        workspace_scoped=workspace_scoped,
     )
     if tool.name in _READ_TOOLS:
         permission = "view_analytics" if tool.name.endswith("analytics") else None
@@ -289,13 +403,12 @@ def _with_builtin_metadata(tool: Tool) -> Tool:
             confirmation_required=True,
         )
     if tool.name in _CONTENT_TOOLS:
-        permission = "create_posts" if tool.name == "create_draft" else "upload_media"
         return replace(
             tool,
             annotations=ToolAnnotations(title=tool.name.replace("_", " ").title()),
             risk_level="medium",
             required_scope="mcp.content",
-            required_permissions=(permission,),
+            required_permissions=_CONTENT_PERMISSIONS[tool.name],
         )
     return tool
 

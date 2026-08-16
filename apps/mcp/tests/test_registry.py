@@ -25,18 +25,27 @@ from apps.mcp.results import (
 
 EXPECTED_LEGACY_TOOL_NAMES = {
     "cancel_post",
+    "clone_post",
+    "convert_idea_to_draft",
     "create_draft",
+    "create_idea",
     "finalize_media_upload",
     "get_account_analytics",
+    "get_account_health",
     "get_media",
     "get_post",
     "get_post_analytics",
+    "get_workspace_context",
     "list_accounts",
+    "list_ideas",
     "list_posts",
+    "list_workspaces",
     "request_media_upload",
     "schedule_draft",
     "schedule_post",
     "search_media",
+    "update_draft",
+    "update_idea",
     "upload_media",
 }
 
@@ -217,7 +226,57 @@ def _representative_success_payloads() -> dict[str, dict]:
             }
         ],
     }
+    idea = {
+        "id": "50000000-0000-0000-0000-000000000001",
+        "workspace_id": post["workspace_id"],
+        "title": "Launch idea",
+        "description": "A launch concept",
+        "tags": ["launch"],
+        "status": "unassigned",
+        "group_id": None,
+        "media_asset_id": None,
+        "post_id": None,
+        "created_at": "2026-08-16T09:00:00+00:00",
+        "updated_at": "2026-08-16T09:00:00+00:00",
+    }
     return {
+        "list_workspaces": {
+            "workspaces": [
+                {
+                    "id": post["workspace_id"],
+                    "name": "Product",
+                    "organization_id": "50000000-0000-0000-0000-000000000002",
+                    "role": "owner",
+                    "timezone": "Europe/London",
+                }
+            ]
+        },
+        "get_workspace_context": {
+            "id": post["workspace_id"],
+            "name": "Product",
+            "description": "Product workspace",
+            "timezone": "Europe/London",
+            "brand_colors": {"primary": "#112233", "secondary": "#445566"},
+            "default_hashtags": ["#product"],
+            "approval_policy": "none",
+            "categories": [],
+            "tags": [],
+            "templates": [],
+        },
+        "get_account_health": {
+            **account,
+            "healthy": True,
+            "needs_reconnect": False,
+            "issues": [],
+            "last_health_check_at": None,
+            "reconnect_path": "/accounts/reconnect/",
+        },
+        "list_ideas": {"ideas": [idea], "limit": 50, "next_cursor": None},
+        "create_idea": idea,
+        "update_idea": idea,
+        "convert_idea_to_draft": post,
+        "update_draft": post,
+        "clone_post": post,
         "list_accounts": {"accounts": [account]},
         "create_draft": post,
         "schedule_post": post,
