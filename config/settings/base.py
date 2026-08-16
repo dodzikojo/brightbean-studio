@@ -488,6 +488,11 @@ RATELIMIT_USE_CACHE = "default"
 #     /oauth/authorize/ sends unauthenticated users to log in via allauth).
 MCP_PUBLIC_BASE_URL = env("MCP_PUBLIC_BASE_URL", default=APP_URL).rstrip("/")
 MCP_OAUTH_ISSUER_URL = env("MCP_OAUTH_ISSUER_URL", default=APP_URL).rstrip("/")
+MCP_SERVER_ENABLED = env.bool("MCP_SERVER_ENABLED", default=True)
+MCP_TRANSPORT_BACKEND = env("MCP_TRANSPORT_BACKEND", default="legacy")
+# Optional exact-path alias used during staged SDK rollouts, for example
+# ``/api/v1/mcp-next``. Empty keeps only the canonical endpoint active.
+MCP_STAGING_ALIAS = env("MCP_STAGING_ALIAS", default="").rstrip("/")
 
 OAUTH2_PROVIDER = {
     "SCOPES": {"mcp": "Call BrightBean Studio MCP tools on your behalf"},

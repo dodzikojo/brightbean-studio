@@ -1,7 +1,8 @@
 # Build config (Dockerfile) for the Railway one-click template:
 #   https://railway.com/deploy/brightbean-studio
 # The template provisions three services that share this image:
-#   - web:     Gunicorn (Dockerfile CMD), runs `python manage.py migrate` on startup
+#   - web:     Gunicorn with Uvicorn ASGI workers (Dockerfile CMD), runs
+#              `python manage.py migrate` on startup
 #   - worker:  `python manage.py process_tasks`  (django-background-tasks)
 #   - Postgres
 # The web service's startup migrate fires the `post_migrate` hooks that register
@@ -10,7 +11,7 @@
 #
 # Wiring Railway MANUALLY from this repo instead of the template? Replicate both:
 # a worker service running `process_tasks`, and `migrate` on each deploy — the
-# Dockerfile CMD only starts Gunicorn, so neither happens on its own.
+# Dockerfile CMD only starts the ASGI web process, so neither happens on its own.
 
 [build]
 builder = "dockerfile"
