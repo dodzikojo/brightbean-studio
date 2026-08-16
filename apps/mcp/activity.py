@@ -82,6 +82,7 @@ def record_activity(
     duration_ms: int,
     protocol_version: str = "",
     correlation_id: UUID | None = None,
+    confirmation_state: str | None = None,
 ):
     """Persist one safe activity row; failures never affect the MCP response."""
     from apps.mcp.models import McpActivityEvent
@@ -105,13 +106,13 @@ def record_activity(
             status = McpActivityEvent.Status.SUCCEEDED
         else:
             status = McpActivityEvent.Status.FAILED
-        confirmation_state = McpActivityEvent.ConfirmationState.NOT_REQUIRED
-        if primitive == "tool":
+        resolved_confirmation_state = confirmation_state or McpActivityEvent.ConfirmationState.NOT_REQUIRED
+        if confirmation_state is None and primitive == "tool":
             from apps.mcp.registry import get_tool
 
             tool = get_tool(name, include_disabled=True)
             if tool is not None and tool.confirmation_required:
-                confirmation_state = (
+                resolved_confirmation_state = (
                     McpActivityEvent.ConfirmationState.CONFIRMED
                     if arguments.get("confirmation_token")
                     else McpActivityEvent.ConfirmationState.PREVIEW
@@ -132,7 +133,7 @@ def record_activity(
             duration_ms=max(0, int(duration_ms)),
             protocol_version=protocol_version[:32],
             correlation_id=correlation_id or uuid4(),
-            confirmation_state=confirmation_state,
+            confirmation_state=resolved_confirmation_state,
             summary=summary,
         )
     except Exception:  # noqa: BLE001 - activity is deliberately best-effort.

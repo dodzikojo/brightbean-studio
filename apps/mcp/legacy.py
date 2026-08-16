@@ -125,7 +125,9 @@ def _tools_call(params: dict, context: dict[str, Any]) -> dict:
         )
         if not decision.allowed:
             return domain_error_result(policy_error(decision, name))
-        return tool.handler(handler_arguments, tool_context)
+        from apps.mcp.confirmations import invoke_tool_with_confirmation
+
+        return invoke_tool_with_confirmation(tool, handler_arguments, tool_context)
     except DomainError as exc:
         return domain_error_result(exc)
 
@@ -346,4 +348,5 @@ def _log_mcp_audit(request: HttpRequest, msg: dict, *, status_code: int, duratio
             status_code=status_code,
             duration_ms=duration_ms,
             protocol_version=protocol_version,
+            confirmation_state=getattr(request, "_mcp_confirmation_state", None),
         )

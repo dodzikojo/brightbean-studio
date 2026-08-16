@@ -133,6 +133,38 @@ _CONTENT_TOOLS = frozenset(
     }
 )
 
+_CONFIRMATION_PREVIEW_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "confirmation_required": {"const": True},
+        "confirmation_token": {"type": "string"},
+        "payload_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "preview": {"type": "object", "additionalProperties": True},
+    },
+    "required": [
+        "confirmation_required",
+        "confirmation_token",
+        "payload_hash",
+        "expires_at",
+        "preview",
+    ],
+    "additionalProperties": False,
+}
+
+_CONFIRMED_ACTION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string"},
+        "post_id": {"type": "string"},
+        "status": {"type": "string"},
+        "scheduled_at": {"type": ["string", "null"]},
+        "replayed": {"type": "boolean"},
+    },
+    "required": ["replayed"],
+    "additionalProperties": True,
+}
+
 
 class _StrictOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -223,8 +255,30 @@ def _with_builtin_metadata(tool: Tool) -> Tool:
             required_permission=permission,
         )
     if tool.name in _PUBLISH_TOOLS:
+        confirmation_properties = dict(tool.input_schema.get("properties", {}))
+        confirmation_properties.update(
+            {
+                "confirmation_token": {
+                    "type": "string",
+                    "description": "One-use token returned by the matching preview call.",
+                },
+                "idempotency_key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "Caller-generated replay key required with confirmation_token.",
+                },
+            }
+        )
+        output_schema = dict(tool.output_schema)
+        variants = list(output_schema.get("oneOf", []))
+        if variants:
+            variants = [variants[0], _CONFIRMATION_PREVIEW_SCHEMA, _CONFIRMED_ACTION_SCHEMA, *variants[1:]]
+            output_schema["oneOf"] = variants
         return replace(
             tool,
+            input_schema={**tool.input_schema, "properties": confirmation_properties},
+            output_schema=output_schema,
             annotations=ToolAnnotations(
                 title=tool.name.replace("_", " ").title(),
                 open_world=True,

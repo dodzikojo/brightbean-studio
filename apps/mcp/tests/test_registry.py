@@ -92,6 +92,10 @@ def test_existing_tools_expose_meaningful_policy_metadata():
     assert tools["schedule_post"].required_scope == "mcp.publish"
     assert tools["schedule_post"].confirmation_required is True
     assert tools["schedule_post"].required_permissions == ("create_posts", "publish_directly")
+    assert tools["schedule_post"].input_schema["properties"]["confirmation_token"]["type"] == "string"
+    assert tools["schedule_post"].input_schema["properties"]["idempotency_key"]["maxLength"] == 128
+    confirmation_schema = tools["schedule_post"].output_schema["oneOf"][1]
+    assert "confirmation_token" in confirmation_schema["required"]
     assert tools["schedule_draft"].required_permissions == ("create_posts", "publish_directly")
     assert tools["cancel_post"].required_permissions == ("create_posts",)
 

@@ -64,6 +64,34 @@ def _post(client: Client, body) -> tuple[int, dict | list | None]:
     return r.status_code, r.json()
 
 
+def _confirm_tool(client: Client, name: str, arguments: dict, *, idempotency_key: str) -> tuple[dict, dict]:
+    """Exercise the public preview/confirm contract and return both payloads."""
+    status, preview_envelope = _post(client, _rpc("tools/call", {"name": name, "arguments": arguments}))
+    assert status == 200
+    assert isinstance(preview_envelope, dict)
+    assert "error" not in preview_envelope, preview_envelope
+    preview = json.loads(preview_envelope["result"]["content"][0]["text"])
+    assert preview["confirmation_required"] is True
+    status, confirmed_envelope = _post(
+        client,
+        _rpc(
+            "tools/call",
+            {
+                "name": name,
+                "arguments": {
+                    **arguments,
+                    "confirmation_token": preview["confirmation_token"],
+                    "idempotency_key": idempotency_key,
+                },
+            },
+        ),
+    )
+    assert status == 200
+    assert isinstance(confirmed_envelope, dict)
+    assert "error" not in confirmed_envelope, confirmed_envelope
+    return preview, json.loads(confirmed_envelope["result"]["content"][0]["text"])
+
+
 # ---------------------------------------------------------------------------
 # Fixtures — minimal scaffold mirroring the REST test setup.
 # ---------------------------------------------------------------------------
@@ -365,23 +393,21 @@ class TestCreateDraftTool:
 class TestSchedulePostTool:
     def test_creates_a_scheduled_post(self, client_with_token, social_account):
         when = (timezone.now() + timedelta(hours=2)).isoformat()
-        status, body = _post(
+        arguments = {
+            "social_account_id": str(social_account.id),
+            "caption": "scheduled via mcp",
+            "scheduled_at": when,
+        }
+        preview, confirmed = _confirm_tool(
             client_with_token,
-            _rpc(
-                "tools/call",
-                {
-                    "name": "schedule_post",
-                    "arguments": {
-                        "social_account_id": str(social_account.id),
-                        "caption": "scheduled via mcp",
-                        "scheduled_at": when,
-                    },
-                },
-            ),
+            "schedule_post",
+            arguments,
+            idempotency_key="schedule-post-once",
         )
-        assert "error" not in body, body
-        inner = json.loads(body["result"]["content"][0]["text"])
-        assert inner["platform_posts"][0]["status"] == "scheduled"
+        assert Post.objects.count() == 1
+        assert preview["preview"] == {"social_account_id": str(social_account.id), "scheduled_at": when}
+        assert confirmed["replayed"] is False
+        assert Post.objects.get().platform_posts.get().status == "scheduled"
 
 
 # ---------------------------------------------------------------------------
@@ -680,20 +706,16 @@ class TestScheduleDraftTool:
 
     def test_promotes_draft_to_scheduled(self, client_with_token, draft_post):
         when = (timezone.now() + timedelta(hours=2)).isoformat()
-        status, body = _post(
+        preview, confirmed = _confirm_tool(
             client_with_token,
-            _rpc(
-                "tools/call",
-                {
-                    "name": "schedule_draft",
-                    "arguments": {"post_id": str(draft_post.id), "scheduled_at": when},
-                },
-            ),
+            "schedule_draft",
+            {"post_id": str(draft_post.id), "scheduled_at": when},
+            idempotency_key="schedule-draft-once",
         )
-        assert status == 200
-        assert "error" not in body, body
-        inner = json.loads(body["result"]["content"][0]["text"])
-        assert inner["platform_posts"][0]["status"] == "scheduled"
+        draft_post.refresh_from_db()
+        assert draft_post.platform_posts.get().status == "scheduled"
+        assert preview["preview"]["post_id"] == str(draft_post.id)
+        assert confirmed["replayed"] is False
         draft_post.refresh_from_db()
         assert draft_post.platform_posts.get().status == "scheduled"
 
@@ -701,13 +723,29 @@ class TestScheduleDraftTool:
         # ``scheduled_post`` fixture is already in scheduled state with no
         # draft children — schedule_draft should refuse.
         when = (timezone.now() + timedelta(hours=2)).isoformat()
-        status, body = _post(
+        status, preview_body = _post(
             client_with_token,
             _rpc(
                 "tools/call",
                 {
                     "name": "schedule_draft",
                     "arguments": {"post_id": str(scheduled_post.id), "scheduled_at": when},
+                },
+            ),
+        )
+        preview = json.loads(preview_body["result"]["content"][0]["text"])
+        status, body = _post(
+            client_with_token,
+            _rpc(
+                "tools/call",
+                {
+                    "name": "schedule_draft",
+                    "arguments": {
+                        "post_id": str(scheduled_post.id),
+                        "scheduled_at": when,
+                        "confirmation_token": preview["confirmation_token"],
+                        "idempotency_key": "invalid-schedule-draft",
+                    },
                 },
             ),
         )
@@ -732,16 +770,16 @@ class TestScheduleDraftTool:
 @pytest.mark.django_db
 class TestCancelPostTool:
     def test_cancel_transitions_scheduled_to_draft(self, client_with_token, scheduled_post):
-        status, body = _post(
+        preview, confirmed = _confirm_tool(
             client_with_token,
-            _rpc(
-                "tools/call",
-                {"name": "cancel_post", "arguments": {"post_id": str(scheduled_post.id)}},
-            ),
+            "cancel_post",
+            {"post_id": str(scheduled_post.id)},
+            idempotency_key="cancel-post-once",
         )
-        assert "error" not in body, body
-        inner = json.loads(body["result"]["content"][0]["text"])
-        assert inner["platform_posts"][0]["status"] == "draft"
+        assert preview["preview"]["post_id"] == str(scheduled_post.id)
+        assert confirmed["replayed"] is False
+        scheduled_post.refresh_from_db()
+        assert scheduled_post.platform_posts.get().status == "draft"
 
 
 # ---------------------------------------------------------------------------

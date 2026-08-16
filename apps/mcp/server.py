@@ -328,10 +328,9 @@ def _call_tool_sync(access_token: BrightBeanAccessToken, name: str, arguments: d
         )
         if not decision.allowed:
             return domain_error_result(policy_error(decision, name))
-        result = tool.handler(
-            handler_arguments,
-            context,
-        )
+        from apps.mcp.confirmations import invoke_tool_with_confirmation
+
+        result = invoke_tool_with_confirmation(tool, handler_arguments, context)
     except _ToolValidationError as exc:
         raise MCPError(code=INVALID_PARAMS, message=f"tools/call '{name}': {exc}") from exc
     except JsonRpcError as exc:
@@ -530,6 +529,7 @@ async def _audit(
         status_code=status_code,
         duration_ms=duration_ms,
         protocol_version=protocol_version,
+        confirmation_state=getattr(access_token.django_request, "_mcp_confirmation_state", None),
     )
 
 
