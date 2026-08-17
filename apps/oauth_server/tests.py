@@ -10,6 +10,7 @@ import json
 
 import pytest
 from django.test import Client
+from django.utils import timezone
 
 REGISTER_URL = "/oauth/register"
 AS_META_URL = "/.well-known/oauth-authorization-server"
@@ -188,3 +189,44 @@ class TestAuthorizationRedirectSecurity:
                 "http://evil.example.com/callback?code=abc",
                 application=None,
             )
+
+    @pytest.mark.django_db
+    def test_consent_csp_allows_loopback_but_not_general_http(self, django_user_model):
+        from oauth2_provider.models import get_application_model
+
+        from apps.oauth_server.resources import canonical_mcp_resource_uri
+
+        user = django_user_model.objects.create_user(
+            email="csp@example.com",
+            password="test",
+            tos_accepted_at=timezone.now(),
+        )
+        app_model = get_application_model()
+        app = app_model.objects.create(
+            name="Native client",
+            client_type=app_model.CLIENT_PUBLIC,
+            authorization_grant_type=app_model.GRANT_AUTHORIZATION_CODE,
+            redirect_uris="http://127.0.0.1:1455/callback/codex",
+        )
+        client = Client()
+        client.force_login(user)
+
+        response = client.get(
+            "/oauth/authorize/",
+            {
+                "client_id": app.client_id,
+                "redirect_uri": app.redirect_uris,
+                "response_type": "code",
+                "scope": "mcp.read",
+                "code_challenge": "A" * 43,
+                "code_challenge_method": "S256",
+                "resource": canonical_mcp_resource_uri(),
+            },
+        )
+
+        assert response.status_code == 200
+        policy = response.headers.get("Content-Security-Policy") or response["Content-Security-Policy-Report-Only"]
+        form_action = policy.split("form-action ", 1)[1].split(";", 1)[0]
+        assert "http://127.0.0.1:*" in form_action
+        assert "http://localhost:*" in form_action
+        assert "http:" not in form_action.split()
