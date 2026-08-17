@@ -88,12 +88,15 @@ def _dcr_rate_limited(request) -> bool:
     return global_count > _DCR_GLOBAL_LIMIT
 
 
-def _is_https_uri(value) -> bool:
+def _is_secure_redirect_uri(value) -> bool:
     if not isinstance(value, str):
         return False
     parsed = urlparse(value)
+    secure_scheme = parsed.scheme == "https" or (
+        parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+    )
     return (
-        parsed.scheme == "https"
+        secure_scheme
         and bool(parsed.netloc)
         and parsed.username is None
         and parsed.password is None
@@ -155,10 +158,10 @@ class RegisterView(View):
             return _dcr_error("invalid_redirect_uri", "Too many redirect_uris.")
         if len(set(redirect_uris)) != len(redirect_uris):
             return _dcr_error("invalid_redirect_uri", "redirect_uris must be unique.")
-        if not all(_is_https_uri(u) for u in redirect_uris):
+        if not all(_is_secure_redirect_uri(u) for u in redirect_uris):
             return _dcr_error(
                 "invalid_redirect_uri",
-                "Each redirect_uri must be an absolute https URL.",
+                "Each redirect_uri must be an absolute https URL or a loopback http URL.",
             )
 
         grant_types = body.get("grant_types") or ["authorization_code"]

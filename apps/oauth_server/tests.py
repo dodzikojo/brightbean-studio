@@ -55,6 +55,20 @@ class TestDynamicClientRegistration:
         assert app.client_type == app.CLIENT_PUBLIC
         assert app.authorization_grant_type == app.GRANT_AUTHORIZATION_CODE
 
+    @pytest.mark.parametrize(
+        "redirect_uri",
+        [
+            "http://127.0.0.1:1455/callback/codex",
+            "http://localhost:1455/callback/codex",
+            "http://[::1]:1455/callback/codex",
+        ],
+    )
+    def test_register_native_client_with_loopback_http_redirect(self, redirect_uri):
+        response = _register(Client(), {"redirect_uris": [redirect_uri]})
+
+        assert response.status_code == 201
+        assert response.json()["redirect_uris"] == [redirect_uri]
+
     def test_rejects_http_redirect(self):
         r = _register(Client(), {"redirect_uris": ["http://evil.example.com/cb"]})
         assert r.status_code == 400
