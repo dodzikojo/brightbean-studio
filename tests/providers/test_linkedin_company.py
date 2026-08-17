@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from providers.linkedin_company import LinkedInCompanyProvider
 
 
@@ -147,3 +149,14 @@ class TestGetUserPages:
         pages = provider.get_user_pages("token")
 
         assert pages[0]["id"] == "33333"
+
+
+def test_company_inbox_polling_stops_before_calling_linkedin():
+    """Company inbox polling needs an organization author, not a member."""
+    provider = LinkedInCompanyProvider()
+    provider._request = MagicMock(side_effect=AssertionError("LinkedIn must not be called"))
+
+    with pytest.raises(NotImplementedError):
+        provider.get_messages("company-token")
+
+    provider._request.assert_not_called()

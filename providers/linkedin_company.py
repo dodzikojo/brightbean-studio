@@ -7,8 +7,10 @@ pick one, and publishes to that Company Page via the organization URN.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from .linkedin import API_BASE, LINKEDIN_HEADERS, LinkedInProvider
+from .types import InboxMessage
 
 logger = logging.getLogger(__name__)
 
@@ -62,3 +64,13 @@ class LinkedInCompanyProvider(LinkedInProvider):
                 }
             )
         return pages
+
+    def get_messages(self, access_token: str, since: datetime | None = None) -> list[InboxMessage]:
+        """Defer Company Page inbox polling until it can use an organization author.
+
+        The base LinkedIn implementation derives a member URN from ``/v2/me``.
+        Reusing it for a Company Page makes LinkedIn reject every poll and burns
+        the shared application quota.  ``InboxSyncEngine`` treats
+        ``NotImplementedError`` as an unsupported provider surface and skips it.
+        """
+        raise NotImplementedError("LinkedIn Company inbox polling requires an organization author")
