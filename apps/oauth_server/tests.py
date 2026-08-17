@@ -164,3 +164,27 @@ class TestS256PkceEnforcement:
             "client-id",
             _FakeOAuthRequest(code_challenge_method="S256"),
         ) in (True, False)
+
+
+class TestAuthorizationRedirectSecurity:
+    def test_authorization_response_allows_loopback_http(self):
+        from apps.oauth_server.views import CanonicalResourceAuthorizationView
+
+        response = CanonicalResourceAuthorizationView().redirect(
+            "http://127.0.0.1:1455/callback/codex?code=abc",
+            application=None,
+        )
+
+        assert response.status_code == 302
+        assert response["Location"].startswith("http://127.0.0.1:1455/")
+
+    def test_authorization_response_rejects_remote_http(self):
+        from django.core.exceptions import DisallowedRedirect
+
+        from apps.oauth_server.views import CanonicalResourceAuthorizationView
+
+        with pytest.raises(DisallowedRedirect):
+            CanonicalResourceAuthorizationView().redirect(
+                "http://evil.example.com/callback?code=abc",
+                application=None,
+            )

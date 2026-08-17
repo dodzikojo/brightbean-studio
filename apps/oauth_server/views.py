@@ -24,6 +24,7 @@ from django.utils.decorators import method_decorator
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET
+from oauth2_provider.http import OAuth2ResponseRedirect
 from oauth2_provider.models import get_application_model
 from oauth2_provider.views.base import AuthorizationView, TokenView
 
@@ -107,6 +108,15 @@ def _is_secure_redirect_uri(value) -> bool:
 
 class CanonicalResourceAuthorizationView(AuthorizationView):
     """Reject authorization unless it targets exactly the MCP resource."""
+
+    def redirect(self, redirect_to, application):
+        # django-oauth-toolkit applies a second scheme check after it has
+        # created the authorization response. Keep its HTTPS-only default for
+        # remote clients, but permit the native-app loopback redirects that DCR
+        # already validates and stores exactly.
+        if urlparse(redirect_to).scheme == "http" and _is_secure_redirect_uri(redirect_to):
+            return OAuth2ResponseRedirect(redirect_to, ["http"])
+        return super().redirect(redirect_to, application)
 
     def dispatch(self, request, *args, **kwargs):
         from .resources import canonical_mcp_resource_uri
