@@ -13,6 +13,11 @@ def health_check(request):
     return JsonResponse({"status": "ok"})
 
 
+def privacy_policy(request):
+    """Public privacy policy for IssueLab's BrightBean Studio deployment."""
+    return render(request, "legal/privacy_policy.html")
+
+
 @login_required
 def dashboard(request):
     """Main dashboard - redirects to last used workspace or shows org overview."""
