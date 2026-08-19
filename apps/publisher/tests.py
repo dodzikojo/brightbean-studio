@@ -198,6 +198,17 @@ class DispatchExtraInjectionTest(SimpleTestCase):
 
 class ResolvePublishCredentialsTest(SimpleTestCase):
     @patch("apps.publisher.engine.resolve_platform_credentials", return_value={"client_id": "id"})
+    def test_linkedin_company_credentials_include_selected_organization_id(self, _mock_resolve):
+        account = MagicMock()
+        account.platform = "linkedin_company"
+        account.account_platform_id = "98765"
+        account.workspace.organization_id = "org-1"
+
+        credentials = _resolve_publish_credentials(account)
+
+        self.assertEqual(credentials["organization_id"], "98765")
+
+    @patch("apps.publisher.engine.resolve_platform_credentials", return_value={"client_id": "id"})
     def test_facebook_credentials_include_selected_page_id(self, _mock_resolve):
         account = MagicMock()
         account.platform = "facebook"

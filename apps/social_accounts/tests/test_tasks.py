@@ -88,6 +88,41 @@ class TestCheckSocialAccountHealth:
         assert credentials["ig_user_id"] == "17841400000000000"
         mock_provider.get_profile.assert_called_once_with("page-token")
 
+    @patch("providers.get_provider")
+    def test_linkedin_company_health_check_refreshes_the_selected_organization(self, mock_get_provider, workspace):
+        account = SocialAccount.objects.create(
+            workspace=workspace,
+            platform="linkedin_company",
+            account_platform_id="98765",
+            account_name="IssueLab Cloud",
+            account_handle="issuelab-cloud",
+            avatar_url="https://example.com/old-logo.png",
+            oauth_access_token="company-token",
+            connection_status=SocialAccount.ConnectionStatus.CONNECTED,
+        )
+        mock_provider = MagicMock()
+        mock_provider.get_profile.return_value = _profile(
+            platform_id="member-123",
+            name="Dodzi Agbenorku",
+            avatar_url="urn:li:digitalmediaAsset:personal-photo",
+        )
+        mock_provider.get_organization_profile.return_value = _profile(
+            platform_id="98765",
+            name="IssueLab Cloud",
+            handle="issuelab-cloud",
+            avatar_url="https://example.com/new-logo.png",
+        )
+        mock_get_provider.return_value = mock_provider
+
+        check_social_account_health.now(str(account.id))
+
+        account.refresh_from_db()
+        assert account.account_name == "IssueLab Cloud"
+        assert account.account_handle == "issuelab-cloud"
+        assert account.avatar_url == "https://example.com/new-logo.png"
+        mock_provider.get_organization_profile.assert_called_once_with("company-token", "98765")
+        mock_provider.get_profile.assert_not_called()
+
     @patch("apps.common.validators.is_safe_url", return_value=True)
     @patch("providers.get_provider")
     def test_mastodon_health_check_injects_instance_url_without_registration(

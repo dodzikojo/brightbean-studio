@@ -515,6 +515,11 @@ class LinkedInProvider(SocialProvider):
         profile = self.get_profile(access_token)
         actor = f"urn:li:person:{profile.platform_id}"
 
+        return self._publish_comment_as(access_token, post_id, text, actor)
+
+    def _publish_comment_as(self, access_token: str, post_id: str, text: str, actor: str) -> CommentResult:
+        """Post a comment using an explicit person or organization actor."""
+
         resp = self._request(
             "POST",
             f"{API_BASE}/rest/socialActions/{_encode_urn(post_id)}/comments",
@@ -522,6 +527,7 @@ class LinkedInProvider(SocialProvider):
             headers=LINKEDIN_HEADERS,
             json={
                 "actor": actor,
+                "object": post_id,
                 # Plain text on purpose: the Comments API is not little-format
                 # (mentions ride in a separate attributes[] array), so escaping
                 # would publish literal backslashes and shift mention offsets.

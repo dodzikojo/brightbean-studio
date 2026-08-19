@@ -9,8 +9,9 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
+from .exceptions import APIError
 from .linkedin import API_BASE, LINKEDIN_HEADERS, LinkedInProvider
-from .types import InboxMessage
+from .types import AccountProfile, CommentResult, InboxMessage
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,44 @@ class LinkedInCompanyProvider(LinkedInProvider):
                 }
             )
         return pages
+
+    def get_organization_profile(self, access_token: str, organization_id: str) -> AccountProfile:
+        """Fetch identity fields for one selected Company Page.
+
+        Company tokens belong to the administering member, so the inherited
+        ``get_profile`` method resolves ``/v2/me`` and must not be used to
+        refresh a stored organization account.
+        """
+        organization_id = str(organization_id)
+        for page in self.get_user_pages(access_token):
+            if str(page["id"]) == organization_id:
+                return AccountProfile(
+                    platform_id=organization_id,
+                    name=page["name"],
+                    handle=page.get("handle"),
+                    avatar_url=page.get("picture"),
+                    follower_count=page.get("followers_count", 0),
+                    extra=page,
+                )
+
+        raise APIError(
+            "The selected LinkedIn Company Page is no longer available to this account.",
+            platform=self.platform_name,
+            retryable=False,
+        )
+
+    def publish_comment(self, access_token: str, post_id: str, text: str) -> CommentResult:
+        """Comment on a post as the selected Company Page."""
+        organization_id = self.credentials.get("organization_id")
+        if not organization_id:
+            raise APIError(
+                "LinkedIn Company comments require the selected organization ID.",
+                platform=self.platform_name,
+                retryable=False,
+            )
+
+        actor = f"urn:li:organization:{organization_id}"
+        return self._publish_comment_as(access_token, post_id, text, actor)
 
     def get_messages(self, access_token: str, since: datetime | None = None) -> list[InboxMessage]:
         """Defer Company Page inbox polling until it can use an organization author.

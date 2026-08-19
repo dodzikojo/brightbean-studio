@@ -75,7 +75,15 @@ def check_social_account_health(account_id: str):
 
     # Validate token by fetching profile
     try:
-        profile = provider.get_profile(account.oauth_access_token)
+        if account.platform == "linkedin_company":
+            # The OAuth token identifies the member who administers the Page.
+            # /v2/me therefore returns that member, not the selected company.
+            profile = provider.get_organization_profile(
+                account.oauth_access_token,
+                account.account_platform_id,
+            )
+        else:
+            profile = provider.get_profile(account.oauth_access_token)
         account.follower_count = profile.follower_count
         # Provider CDNs (TikTok, Meta) return signed avatar URLs that
         # expire; display names and handles can also change on-platform.

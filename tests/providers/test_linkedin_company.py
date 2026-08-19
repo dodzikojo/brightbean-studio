@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from providers.exceptions import APIError
 from providers.linkedin_company import LinkedInCompanyProvider
 
 
@@ -149,6 +150,74 @@ class TestGetUserPages:
         pages = provider.get_user_pages("token")
 
         assert pages[0]["id"] == "33333"
+
+
+class TestGetOrganizationProfile:
+    def test_returns_the_matching_company_page(self):
+        provider = LinkedInCompanyProvider()
+        provider.get_user_pages = MagicMock(
+            return_value=[
+                {
+                    "id": "11111",
+                    "name": "Other Company",
+                    "handle": "other-company",
+                    "picture": "https://example.com/other.png",
+                },
+                {
+                    "id": "98765",
+                    "name": "IssueLab Cloud",
+                    "handle": "issuelab-cloud",
+                    "picture": "https://example.com/issuelab.png",
+                },
+            ]
+        )
+
+        profile = provider.get_organization_profile("company-token", "98765")
+
+        assert profile.platform_id == "98765"
+        assert profile.name == "IssueLab Cloud"
+        assert profile.handle == "issuelab-cloud"
+        assert profile.avatar_url == "https://example.com/issuelab.png"
+        provider.get_user_pages.assert_called_once_with("company-token")
+
+    def test_raises_when_selected_company_is_no_longer_available(self):
+        provider = LinkedInCompanyProvider()
+        provider.get_user_pages = MagicMock(return_value=[])
+
+        with pytest.raises(APIError, match="no longer available"):
+            provider.get_organization_profile("company-token", "98765")
+
+
+class TestPublishComment:
+    def test_comments_as_the_selected_organization(self):
+        provider = LinkedInCompanyProvider({"organization_id": "98765"})
+        provider.get_profile = MagicMock(side_effect=AssertionError("must not resolve /v2/me"))
+        provider._request = MagicMock(
+            return_value=MagicMock(
+                json=MagicMock(return_value={"id": "comment-1"}),
+                headers={"x-restli-id": "comment-1"},
+            )
+        )
+
+        result = provider.publish_comment(
+            "company-token",
+            "urn:li:share:123",
+            "Read the full case study",
+        )
+
+        assert result.platform_comment_id == "comment-1"
+        assert provider._request.call_args.kwargs["json"] == {
+            "actor": "urn:li:organization:98765",
+            "object": "urn:li:share:123",
+            "message": {"text": "Read the full case study"},
+        }
+        provider.get_profile.assert_not_called()
+
+    def test_requires_the_selected_organization_id(self):
+        provider = LinkedInCompanyProvider()
+
+        with pytest.raises(APIError, match="organization ID"):
+            provider.publish_comment("company-token", "urn:li:share:123", "Comment")
 
 
 def test_company_inbox_polling_stops_before_calling_linkedin():

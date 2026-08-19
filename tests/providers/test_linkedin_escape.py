@@ -82,6 +82,7 @@ class TestCommentsAreNotEscaped:
 
         assert provider._request.call_args.kwargs["json"] == {
             "actor": "urn:li:person:abc",
+            "object": "urn:li:share:1",
             "message": {"text": "Thanks (really)! #wow"},
         }
 
