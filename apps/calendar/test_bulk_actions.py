@@ -7,6 +7,7 @@ branch, REST ``/schedule``). These tests pin that gate plus the protected-status
 skips and the orphan-Post cleanup.
 """
 
+import re
 import zoneinfo
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import patch
@@ -440,6 +441,62 @@ class PublishTabCountTests(BulkActionBase):
         )
 
         self.assertEqual(response.context["queue_count"], 2)
+
+
+class SidebarPublishingNavigationTests(BulkActionBase):
+    """The global sidebar links directly into every Publish list tab."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.force_login(self.owner)
+        self.url = reverse("calendar:calendar", kwargs={"workspace_id": self.workspace.id})
+
+    def test_sidebar_contains_direct_links_to_each_publish_tab(self):
+        response = self.client.get(self.url, {"mode": "calendar"})
+
+        self.assertEqual(response.status_code, 200)
+        html = response.content.decode()
+        for tab, label in (
+            ("drafts", "Drafts"),
+            ("queue", "Queue"),
+            ("approvals", "Approvals"),
+            ("sent", "Sent"),
+        ):
+            with self.subTest(tab=tab):
+                self.assertIn(f"{self.url}?mode=list&amp;tab={tab}", html)
+                self.assertRegex(
+                    html,
+                    rf'<a[^>]+data-publish-tab="{tab}"[^>]*>[\s\S]*?{label}[\s\S]*?</a>',
+                )
+
+    def test_direct_tab_marks_only_that_sidebar_destination_active(self):
+        for active_tab in ("drafts", "queue", "approvals", "sent"):
+            with self.subTest(active_tab=active_tab):
+                response = self.client.get(self.url, {"mode": "list", "tab": active_tab})
+                html = response.content.decode()
+
+                anchors = re.findall(r'<a[^>]+data-publish-tab="([^"]+)"[^>]*>', html)
+                self.assertEqual(set(anchors), {"drafts", "queue", "approvals", "sent"})
+                active_anchor = re.search(
+                    rf'<a[^>]+data-publish-tab="{active_tab}"[^>]*>',
+                    html,
+                )
+                self.assertIsNotNone(active_anchor)
+                self.assertIn("active", active_anchor.group())
+                self.assertIn('aria-current="page"', active_anchor.group())
+
+                inactive_html = html.replace(active_anchor.group(), "", 1)
+                self.assertNotIn('aria-current="page"', inactive_html)
+
+    def test_list_mode_without_a_tab_marks_queue_active(self):
+        response = self.client.get(self.url, {"mode": "list"})
+
+        self.assertEqual(response.status_code, 200)
+        html = response.content.decode()
+        queue_anchor = re.search(r'<a[^>]+data-publish-tab="queue"[^>]*>', html)
+        self.assertIsNotNone(queue_anchor)
+        self.assertIn("active", queue_anchor.group())
+        self.assertIn('aria-current="page"', queue_anchor.group())
 
 
 class TodayInViewTimezoneTests(BulkActionBase):
